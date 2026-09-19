@@ -279,7 +279,24 @@ grep -n 'findCertificateValidityProblem\|CertificateValidityException' \
 - 因此第 5 节「依赖两个 JDK 内部包（升级 JDK 高风险）」**不再是推断，而是实测事实**，且失败形态是**编译期静默通过、运行期每笔签名都炸**——最难在上线前发现的那一类。
 - **当前没有活跃缺陷**：两个 `Dockerfile` 都是 `FROM amazoncorretto:11`。但凡是 bump 基础镜像到 17/21（例如为了上 CloudHSM SDK 5，其 JCE 只兼容 OpenJDK 17/21/25）的人，**必须同时**给 `wrapper_script.sh` 的 `exec java`（可经 `JAVA_OPTS`）和 `surefire` 的 `argLine` 补上这两个 `--add-exports`，否则 CI 全绿而生产全挂。
 
-**本次复核未覆盖**（与本机能力无关的硬约束）：Tier 2 端到端（需 AWS 账号 + CloudHSM 集群）、多 HSM 故障转移（需 ≥2 HSM 集群）、`cloudhsm` 模块编译（`cavium` 需构建时下载 `cloudhsm-client-jce-latest.el7.**x86_64**.rpm` 且需 `rpm` 工具，本机为 **aarch64** 且无 root）。另注：第 5 节提到 `netty-tcnative` 锁 `linux-x86_64`，本机 aarch64 也印证了该模块无法在 Graviton 上直接跑。
+**订正（复核自身的一处错误）**：上一版这里写「`cloudhsm` 模块编译未覆盖，因为 `cavium` 要 x86_64 rpm 且本机 aarch64 无 root」。**那是没试就下的结论，实测是错的。** 全仓 **7 个 reactor 模块在 aarch64、无 root、无 Docker 下全部编译通过**：
+
+```
+AWS PIX (Brazilian Instant Payment System) ......... SUCCESS
+AWS PIX Core ....................................... SUCCESS
+Pix CloudHSM Parent POM ............................ SUCCESS
+CloudHSM Cavium JCE ................................ SUCCESS
+PIX CloudHSM Proxy ................................. SUCCESS
+Pix KMS Proxy Sync ................................. SUCCESS
+PIX Proxy Test ..................................... SUCCESS
+BUILD SUCCESS
+```
+
+三个原因让它成立，都值得记下来：`rpm` 4.16.1.3 是 Amazon Linux 2023 自带的（解包不需要 root）；那个 `.el7.x86_64.rpm` 里真正被取用的只有 `/opt/cloudhsm/java/cloudhsm-<ver>.jar`，而**该 jar 里 `.so`/native 条目数为 0**，是纯 Java、与架构无关；`netty-tcnative` 的 `linux-x86_64-fedora` jar 也照常下载并参与编译。**所以架构限制是运行期的，不是构建期的**——Graviton 上 `mvn package` 会成功，跑起来才会缺 native 库，这个先绿后炸的顺序正是它容易被漏掉的原因。
+
+顺带得到一个 A13（构建不可复现）的实测锚点：**2026-09-19 这天 `latest` 解析到的是 `cloudhsm 3.4.4`**（`[echo] cloudhsm version: 3.4.4`）。换一天构建可能是别的版本，而消费方用的是开区间 `[3.0.0,)`。
+
+**本次复核确实未覆盖**（真正的硬约束）：Tier 2 端到端（需 AWS 账号 + CloudHSM 集群）、多 HSM 故障转移（需 ≥2 HSM 集群并在运行中替换其中一个）。
 
 ---
 
@@ -298,8 +315,8 @@ grep -n 'findCertificateValidityProblem\|CertificateValidityException' \
 | **证书生命周期** | 无到期监控；配置只在启动时读取，**换证书必须重新部署** |
 | **审计与隐私** | 审计日志含报文全文，即含姓名、CPF、账号、金额——属 **LGPD** 管辖的敏感数据，示例零处理（`AuditLog.java:34-35,50-51` 原样存 `request_body` / `response_body`；随仓库的测试报文里就有 `<Nm>Fulano da Silva</Nm>` 和 11 位 `<Id>`）。S3 未配加密 / Object Lock / 版本控制（**Object Lock 只能建桶时启用**）。**订正**：`errorOutputPrefix` 其实**两个 README 的两条流都配了**（`README-CloudHSM.md:363,372`、`README-KMS.md:140,149`），本文档此前写「未配」是错的。真正缺的是**针对那个已经存在的 `error/` 前缀的告警**——全仓零 CloudWatch 告警配置，所以投递失败的记录会静静堆在 `error/` 下而没有任何人知道 |
 | **可观测性** | 无指标、无追踪、无告警。验签失败不区分"签名不匹配"（安全事件）与"证书过期/配置错误"（运维故障） |
-| **架构** | HSM 客户端与应用同容器（`Dockerfile:4-9` 在跑应用的同一镜像里 `yum install` 三个 CloudHSM rpm）；依赖两个 **JDK 内部包**——**已实测**：JDK 11 运行期可用（靠默认 `--illegal-access=permit`），**JDK 17 编译通过但运行期 `IllegalAccessError`，每笔签名都炸**，见第 4.1 节；`netty-tcnative:2.0.31.Final` 的 classifier 是 **`linux-x86_64-fedora`**（`cloudhsm/proxy/pom.xml:99-104`）——不只锁 x86_64，还锁到 Fedora/RHEL 系的 OpenSSL，且 `Dockerfile` 装的三个 rpm 同样是 `el7.x86_64`，**不能直接上 Graviton**；Quarkus 1.7.0 / Camel-Quarkus 1.0.0 均为 2020 年版本（`proxy/pom.xml:17-18`，另 AWS SDK BOM 2.13.0、Lombok 1.18.12 亦同期） |
-| **构建可复现性** | 两处合起来导致不可复现：`cavium/pom.xml:32` 每次构建都拉 `cloudhsm-client-jce-latest.el7.x86_64.rpm`，再用 antrun 正则从 jar 文件名反推 `cloudhsm.version` 并 `install-file` 成 `com.cavium:cloudhsm:${cloudhsm.version}`；消费方 `cloudhsm/proxy/pom.xml:75` 用**版本区间** `[3.0.0,)` 接它（注意区间在 **proxy** 模块而非 cavium 模块，本文档此前把两者都记在 cavium 名下）。净效果是**构建产物取决于你构建那天 AWS 在 `latest` 上放了什么** |
+| **架构** | HSM 客户端与应用同容器（`Dockerfile:4-9` 在跑应用的同一镜像里 `yum install` 三个 CloudHSM rpm）；依赖两个 **JDK 内部包**——**已实测**：JDK 11 运行期可用（靠默认 `--illegal-access=permit`），**JDK 17 编译通过但运行期 `IllegalAccessError`，每笔签名都炸**，见第 4.1 节；`netty-tcnative:2.0.31.Final` 的 classifier 是 **`linux-x86_64-fedora`**（`cloudhsm/proxy/pom.xml:99-104`）——不只锁 x86_64，还锁到 Fedora/RHEL 系的 OpenSSL，且 `Dockerfile` 装的三个 rpm 同样是 `el7.x86_64`，**不能直接上 Graviton**。**注意这是运行期限制而非构建期**：实测 aarch64 上 `mvn package` 全绿（见第 4.1 节），缺 native 库要到运行时才暴露；Quarkus 1.7.0 / Camel-Quarkus 1.0.0 均为 2020 年版本（`proxy/pom.xml:17-18`，另 AWS SDK BOM 2.13.0、Lombok 1.18.12 亦同期） |
+| **构建可复现性** | 两处合起来导致不可复现：`cavium/pom.xml:32` 每次构建都拉 `cloudhsm-client-jce-latest.el7.x86_64.rpm`，再用 antrun 正则从 jar 文件名反推 `cloudhsm.version` 并 `install-file` 成 `com.cavium:cloudhsm:${cloudhsm.version}`；消费方 `cloudhsm/proxy/pom.xml:75` 用**版本区间** `[3.0.0,)` 接它（注意区间在 **proxy** 模块而非 cavium 模块，本文档此前把两者都记在 cavium 名下）。净效果是**构建产物取决于你构建那天 AWS 在 `latest` 上放了什么**。实测锚点：**2026-09-19 解析到 `cloudhsm 3.4.4`** |
 | **范围** | 只覆盖**出向同步提交**（我们 → BACEN）。缺 BACEN **异步回推**消息的入向链路，以及授权、撤销（SAGA）、生效等互补架构。粗估只覆盖完整 Pix 接入的 **30–40%** |
 
 ### 5.1 上表各项的取证（2026-09-19 独立复核）
@@ -320,7 +337,7 @@ grep -n 'findCertificateValidityProblem\|CertificateValidityException' \
 | 无指标 / 追踪 / 告警 | 全仓零 `Micrometer` / `MeterRegistry` / `OpenTelemetry` / `X-Ray` / `putMetricData`，两个 README 里零 CloudWatch 告警配置（唯一的 SNS 提及是开头讲「互补架构」的段落，不是告警） |
 | HSM 客户端与应用同容器 | `proxy/cloudhsm/proxy/src/main/docker/Dockerfile:4-9` 在 `FROM amazoncorretto:11` 的同一镜像里 `yum install` 三个 CloudHSM rpm，第 22-23 行再把 `wrapper_script.sh` 与 `application.jar` 拷进去 |
 
-**本机无法验证**（硬约束，非遗漏）：多 HSM 故障转移需 ≥2 HSM 集群；`cavium` 模块需 x86_64 rpm 与 `rpm` 工具（复核机为 aarch64 且无 root）；S3/Firehose/LGPD 与可观测性各项属部署期配置，需实账号。
+**本机无法验证**（硬约束，非遗漏）：多 HSM 故障转移需 ≥2 HSM 集群；S3/Firehose/LGPD 与可观测性各项属部署期配置，需实账号。（`cavium` 模块的编译**已验证通过**，见第 4.1 节的订正——此前以为它需要 x86_64 主机，实测不需要。）
 
 ---
 

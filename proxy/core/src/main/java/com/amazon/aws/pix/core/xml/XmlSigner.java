@@ -273,7 +273,18 @@ public class XmlSigner {
     }
 
     protected DOMValidateContext getValidateContext(XMLSignatureFactory signatureFactory, Node signatureNode) {
-        return new DOMValidateContext(keySelector, signatureNode);
+        DOMValidateContext validateContext = new DOMValidateContext(keySelector, signatureNode);
+        // Iso20022URIDereferencer reads this property off the context and forwards it to
+        // XMLSignatureInput#setSecureValidation. Nothing used to set it, so the dereferencer
+        // read false and switched secure validation OFF for the AppHdr / Document node sets it
+        // builds - "read, but nobody writes", the mirror image of a value nobody reads.
+        // Measured on Corretto 11.0.32: DOMValidateContext already defaults to secure validation
+        // ENABLED, so this is a consistency fix, NOT a patch for an exploitable hole - a file:
+        // URI reference is refused both when the property is unset and when it is TRUE, and is
+        // honoured only when something sets it to FALSE. See XmlSignerSecureValidationTest,
+        // whose positive control pins that down.
+        validateContext.setProperty("org.jcp.xml.dsig.secureValidation", Boolean.TRUE);
+        return validateContext;
     }
 
 }

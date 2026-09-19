@@ -356,6 +356,52 @@ BUILD SUCCESS
 
 ---
 
+## 7. 独立审计新发现（不属于原来那 5 项）
+
+以下是 2026-09-19 独立复核时**自己读代码找出来的**，不是 fork 原先上报的 5 个缺陷之一。provenance 分开记，是为了让读者能区分「fork 声称修了什么」与「复核另外发现了什么」。
+
+### 7.1 `Iso20022URIDereferencer` 读了一个没人设置的开关
+
+`Iso20022URIDereferencer:40` 把 `org.jcp.xml.dsig.secureValidation` 从 crypto context 取出来，喂给 `XMLSignatureInput#setSecureValidation`：
+
+```java
+result.setSecureValidation(secureValidation(context));          // :40
+private boolean secureValidation(XMLCryptoContext ctx) {        // :56
+    return ctx == null ? false : getBoolean(ctx, "org.jcp.xml.dsig.secureValidation");
+}
+```
+
+而**全仓没有任何地方设置这个属性**——`XmlSigner:276` 只是 `new DOMValidateContext(keySelector, signatureNode)`。所以它恒为 `false`，自定义解引用器会在它自己构造的 `AppHdr` / `Document` 节点集上**关掉** secure validation。这是「写了但没人读」的镜像版本：**读了，但没人写**。
+
+**修法**：`XmlSigner.getValidateContext` 显式 `setProperty("org.jcp.xml.dsig.secureValidation", Boolean.TRUE)`，让解引用器看到的值与 JDK 自身的姿态一致。CloudHSM 与 KMS 两种架构共用同一个 `XmlSigner.verify()`，所以一处修复覆盖两边。
+
+### 7.2 一个**没有**成立的推论（写下来，免得别人再推一遍）
+
+我最初的假设是「secure validation 整体是关的，所以攻击者能让验签方去解引用 `file:` / `http:` 引用」——**实测推翻了它**。在 Corretto 11.0.32 上对同一份携带 `file:` 引用的签名文档做三态对照：
+
+| `org.jcp.xml.dsig.secureValidation` | 结果 |
+|---|---|
+| **不设置** | ❌ 拒绝：`URI file:... is forbidden when secure validation is enabled` |
+| 显式 `TRUE` | ❌ 拒绝（同上） |
+| 显式 `FALSE` | ✅ **通过**，且那条 `file:` 引用被真实解引用（`ref[1] valid=true`） |
+
+即 `DOMValidateContext` 的**默认就是开启**。所以本项目**从未**暴露「攻击者指定路径被解引用」这个风险，7.1 是一致性修复而**不是**补一个可利用漏洞。如果没做这个三态对照，就会把一个 no-op 当成安全修复推上去——这也是为什么下面那个测试里保留了阳性对照。
+
+### 7.3 新增回归测试
+
+`XmlSignerSecureValidationTest`（4 个方法，core 测试数 5 → 9）：
+
+- `validateContextCarriesSecureValidationTrue` —— 捕获真实的 validate context，断言解引用器读到的那个属性为 `TRUE`；
+- `secureValidationRejectsFileUriReference` —— 携带 `file:` 引用的签名必须被拒；
+- `explicitlyDisablingSecureValidationWouldAcceptFileUriReference` —— **阳性对照**：显式设成 `FALSE` 后同一文档通过，证明上面两条不是空断言，并把「改成 false 的代价」钉在测试里；
+- `normallySignedDocumentStillVerifies` —— 正常签名不受影响。
+
+### 7.4 复核确认的一处**设计取舍**，不是缺陷
+
+第 1 节说缺陷 5 的症状是「每笔交易变 500」。读代码确认：修复后**500 依然存在**——`XmlSigner.verify()` 对证书有效期问题抛 `CertificateValidityException`（RuntimeException），而 `VerifyResponseProcessor:27` 只在 `verify()` 返回 `false` 时设 500，异常则直接冒泡成 Camel 错误。所以这个修复改变的是**可诊断性**（日志明确说"证书轮换问题，不是签名不匹配"）而**不是** HTTP 结果。文档的表述容易被读成"修了就不 500 了"，实际不是；真正要停掉 500 需要业务决策（过期证书是否拒绝交易），属第 5 节「必须由合规裁定」那一类。
+
+---
+
 ## Summary in English
 
 This is a **patched fork** of `aws-samples/pix-proxy-samples` at upstream commit

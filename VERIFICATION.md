@@ -10,7 +10,9 @@
 
 ## 0. CI 实测结果（2026-09-19，供直接引用）
 
-推送到 `fixes/p0-production-hardening` 后触发的 [Actions 运行](https://github.com/RadiumGu/pix-proxy-samples/actions/runs/35454878877)：
+**当前状态：`master` 上 5 个 job 全绿** —— [run 35456018649](https://github.com/RadiumGu/pix-proxy-samples/actions/runs/35456018649)（提交 `13349dc`）。这是本仓库首次全绿：唯一长期失败的 `kms + simulator` job 已修好（原因与修法见本节末尾）。
+
+下表是最初那次 [Actions 运行](https://github.com/RadiumGu/pix-proxy-samples/actions/runs/35454878877)（推送 `fixes/p0-production-hardening` 触发），保留下来是因为它记录了 `kms` 红叉的原始现场：
 
 | Job | 结果 | 说明 |
 |---|---|---|
@@ -37,7 +39,7 @@ mvn -B -f proxy/pom.xml -pl core,kms,test package -DskipTests   # 此时通过
 - `search.maven.org` 查 `a:kms-jce-provider` → `numFound: 0`（**任何**版本、任何 groupId 都没有）；直接探 `repo.maven.apache.org` 的 `1.0.0` / `1.0.1` / `1.1.0` 三个路径均 **HTTP 404**；`aws-samples/aws-kms-jce` 的 GitHub **releases 数为 0**。
 - 本地 `mvn install` 后重跑上面第三条命令：`AWS PIX Core` / `Pix KMS Proxy Sync` / `PIX Proxy Test` **三个模块全部 SUCCESS**。即这个红叉**纯粹是工件解析问题，源码本身能编译**。
 
-**CI 已据此修好（2026-09-19）**：`.github/workflows/build.yml` 的 `kms-and-simulator` job 增加了一步，先从源码构建安装 `kms-jce-provider`（固定在提交 `6f7f179`，不跟随分支，保证可复现），再编译 `core,kms,test`。此前那个红叉是**永久性的**且不携带任何关于源码质量的信息；现在这个 job 要么真的证明这两个模块能编译，要么红得有意义。
+**CI 已据此修好（2026-09-19）**：`.github/workflows/build.yml` 的 `kms-and-simulator` job 增加了一步，先从源码构建安装 `kms-jce-provider`（固定在提交 `6f7f179`，不跟随分支，保证可复现），再编译 `core,kms,test`。此前那个红叉是**永久性的**且不携带任何关于源码质量的信息；现在这个 job 要么真的证明这两个模块能编译，要么红得有意义。**实测已生效**：[run 35456018649](https://github.com/RadiumGu/pix-proxy-samples/actions/runs/35456018649) 中该 job **success**，5 个 job 全绿。
 
 ## ⚠️ 先读这一段：这份代码是什么、不是什么
 

@@ -277,7 +277,7 @@ grep -n 'findCertificateValidityProblem\|CertificateValidityException' \
 | **SDK 代际** | 用的是 **CloudHSM Client SDK 3**（`com.cavium`、`key_mgmt_util`、`PARTITION_1`）。当前是 **SDK 5**，API 完全不同。SDK 5 的 JCE 只兼容 OpenJDK 17/21/25 |
 | **HSM 会话** | 会话失效**无重连机制**（只在启动时登录一次）。表现为"跑几天后所有签名失败、重启就好"。SDK 5 已内建改进的登录状态管理 |
 | **HSM 机型** | `hsm1.medium` 的 FIPS 证书 #4218 已于 2026-01-04 移入 CMVP 历史列表，应改用 `hsm2m.medium`（FIPS 140-3 L3） |
-| **输入校验** | 无报文大小上限（可 OOM）、无 ISO 20022 **XSD 模式校验** |
+| **输入校验** | 无 ISO 20022 **XSD 模式校验**（全仓零 `SchemaFactory` / `setSchema` / `.xsd` 校验代码）。报文大小上限**未显式配置**——但**并非没有上限**：实际生效的是 Camel netty-http 的默认 `chunkedMaxContentLength=1048576`（1 MB），由服务端管道里的 `HttpObjectAggregator` 施加（`camel-netty-http-3.4.2` 的 `HttpServerInitializerFactory` 字节码实证）。所以风险不是「可 OOM」，而是**这个上限是隐式的**：既没写进配置也没写进文档，调高它或改动端点配置的人不会意识到自己在放大攻击面 |
 | **TLS** | 未启用主机名校验（靠显式信任 BACEN 证书即证书锁定缓解）；`bcbEndpoint` 未显式配置超时 |
 | **证书生命周期** | 无到期监控；配置只在启动时读取，**换证书必须重新部署** |
 | **审计与隐私** | 审计日志含报文全文，即含姓名、CPF、账号、金额——属 **LGPD** 管辖的敏感数据，示例零处理。S3 未配加密/Object Lock（**Object Lock 只能建桶时启用**）；Firehose `errorOutputPrefix` 与 `error/` 前缀告警未配 |
@@ -285,6 +285,24 @@ grep -n 'findCertificateValidityProblem\|CertificateValidityException' \
 | **架构** | HSM 客户端与应用同容器；依赖两个 **JDK 内部包**——**已实测**：JDK 11 运行期可用（靠默认 `--illegal-access=permit`），**JDK 17 编译通过但运行期 `IllegalAccessError`，每笔签名都炸**，见第 4.1 节；`netty-tcnative` 锁定 `linux-x86_64`，**不能直接上 Graviton**；Quarkus 1.7.0 / Camel-Quarkus 1.0.0 均为 2020 年版本 |
 | **构建可复现性** | `cavium` 模块每次构建都拉 `cloudhsm-client-jce-latest.rpm`，依赖版本区间 `[3.0.0,)` —— **构建不可复现** |
 | **范围** | 只覆盖**出向同步提交**（我们 → BACEN）。缺 BACEN **异步回推**消息的入向链路，以及授权、撤销（SAGA）、生效等互补架构。粗估只覆盖完整 Pix 接入的 **30–40%** |
+
+### 5.1 上表各项的取证（2026-09-19 独立复核）
+
+上表原本是断言，没有给读者核对的落点。以下是逐条实测证据，路径相对仓库根；`R` 指
+`proxy/cloudhsm/proxy/src/main/java/com/amazon/aws/pix/cloudhsm/proxy/PixCloudHSMProxyRouteBuilder.java`。
+
+| 项 | 证据 |
+|---|---|
+| mTLS 私钥必须可导出 | `R:181` 把 `cloudHsmKeyStore.getKey(MtlsKeyLabel)` 强转为 `PrivateKey`，`R:186-187` 用 `SslProvider.OPENSSL` + `keyManager(privateKey, certificates)`——OpenSSL provider 需要真实密钥字节，故该密钥不能是 `-nex`（不可导出）。签名密钥走 `R:194` 的另一条路径，不受此限 |
+| CloudHSM Client SDK 3 | `R:12-13` 导入 `com.cavium.cfm2.*`，`R:174` `new com.cavium.provider.CaviumProvider()`，`R:175` `LoginManager.getInstance().login("PARTITION_1", …)`；`proxy/cloudhsm/cavium/pom.xml:32` 拉 `cloudhsm-client-jce-latest.el7.x86_64.rpm`；README 用 `/opt/cloudhsm/bin/key_mgmt_util`（4 处） |
+| HSM 会话无重连 | 全仓 `login` 只出现在 `R:175`，位于 `configure()` 调用链内，即**仅启动时登录一次**；无重登录、无会话健康检查 |
+| 无 XSD 校验 | 全仓零 `SchemaFactory` / `setSchema` / ISO 20022 `.xsd`（唯一的 `.xsd` 命中全是 pom 的 schema 声明与 surefire 报告） |
+| 未启用主机名校验 | 全仓零 `setEndpointIdentificationAlgorithm` / `HostnameVerifier`。`NettyHttpClientInitializerFactory:140` 只设了 SNI（`setServerNames`），SNI 是「告诉对端我要连哪个名字」，**不校验对端证书是否属于该名字** |
+| `bcbEndpoint` 无显式超时 | `R:129-140` 的构造只设 `bridgeEndpoint` / `throwExceptionOnFailure` / `ssl` / `enabledProtocols` / `sslContextParameters` / `nativeTransport`，无 `requestTimeout`。**分清两者**：`connectTimeout` 有默认 10000 ms，所以**建连**是有界的；但 `requestTimeout` 在 `camel-netty-http-3.4.2` 的组件元数据里**无默认值**（即 `int` 取 0），而 `NettyHttpClientInitializerFactory:102` 的 `ReadTimeoutHandler` 只在 `getRequestTimeout() > 0` 时才装——因此**响应等待完全无界，那个超时处理器从未被装入过管道**。BACEN 侧连上却不回包时，请求会一直悬挂 |
+| 无证书到期监控 | 全仓唯一的 `checkValidity()` 在 `X509IssuerSerialKeySelector:47`，属**验签时**的有效期检查（即缺陷 5 的作用点），不是到期前的主动监控/告警 |
+| 配置只在启动时读取 | `R:156` 的 `ssmClient.getParametersByPath(...)` 由 `configure()`（Camel `RouteBuilder` 启动时执行一次）驱动，无刷新与重载路径 |
+
+**本机无法验证**（硬约束，非遗漏）：多 HSM 故障转移需 ≥2 HSM 集群；`cavium` 模块需 x86_64 rpm 与 `rpm` 工具（复核机为 aarch64 且无 root）；S3/Firehose/LGPD 与可观测性各项属部署期配置，需实账号。
 
 ---
 

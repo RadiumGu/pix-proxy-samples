@@ -18,13 +18,26 @@
 | `wrapper_script.sh - shellcheck` | ✅ success | 缺陷 3 的脚本改动 |
 | `audit schema`（字段/列对齐门禁） | ✅ success | 缺陷 2 |
 | `cloudhsm - compile` | ✅ success | 缺陷 3、4 涉及的模块 |
-| `kms + simulator - compile` | ❌ **failure** | ⚠️ **与本次改动无关**，见下 |
+| `kms + simulator - compile` | ❌ **failure**（该次运行） | ⚠️ **与本次改动无关**；**已于 2026-09-19 修好**，见下 |
 
 **`kms + simulator - compile` 失败原因与本次修复无关**：错误是
 ```
 Could not find artifact software.amazon.awssdk:kms-jce-provider:jar:1.0.0 in central
 ```
-这个坐标在 **`proxy/kms/pom.xml`**（本次未改动的文件）里，是上游预先存在的问题——`kms-jce-provider` 来自 `aws-samples/aws-kms-jce` 项目，从未发布到 Maven Central。上游自己也没有 CI 跑过这个模块（见第 6 节），所以这个缺陷至今没被发现。**它独立于第 1–5 项，不在本 fork 的修复范围内**，如需修复应指向 `aws-kms-jce` 的实际发布坐标或改用本地安装。
+这个坐标在 **`proxy/kms/pom.xml`**（本次未改动的文件）里，是上游预先存在的问题——`kms-jce-provider` 来自 `aws-samples/aws-kms-jce` 项目，从未发布到 Maven Central。上游自己也没有 CI 跑过这个模块（见第 6 节），所以这个缺陷至今没被发现。**它独立于第 1–5 项，不在本 fork 的修复范围内。**
+
+**修复途径只有一条：本地安装。** 本文档此前写的「指向 `aws-kms-jce` 的实际发布坐标」是错的——**不存在这样的坐标**（实测见下）。`aws-kms-jce` 从源码构建出的坐标与 `proxy/kms/pom.xml` 需要的完全一致，所以本地 `mvn install` 一次即可：
+```bash
+git clone https://github.com/aws-samples/aws-kms-jce.git
+mvn -f aws-kms-jce/pom.xml install -DskipTests     # 产出 software.amazon.awssdk:kms-jce-provider:1.0.0
+mvn -B -f proxy/pom.xml -pl core,kms,test package -DskipTests   # 此时通过
+```
+
+实测（2026-09-19）：
+- `search.maven.org` 查 `a:kms-jce-provider` → `numFound: 0`（**任何**版本、任何 groupId 都没有）；直接探 `repo.maven.apache.org` 的 `1.0.0` / `1.0.1` / `1.1.0` 三个路径均 **HTTP 404**；`aws-samples/aws-kms-jce` 的 GitHub **releases 数为 0**。
+- 本地 `mvn install` 后重跑上面第三条命令：`AWS PIX Core` / `Pix KMS Proxy Sync` / `PIX Proxy Test` **三个模块全部 SUCCESS**。即这个红叉**纯粹是工件解析问题，源码本身能编译**。
+
+**CI 已据此修好（2026-09-19）**：`.github/workflows/build.yml` 的 `kms-and-simulator` job 增加了一步，先从源码构建安装 `kms-jce-provider`（固定在提交 `6f7f179`，不跟随分支，保证可复现），再编译 `core,kms,test`。此前那个红叉是**永久性的**且不携带任何关于源码质量的信息；现在这个 job 要么真的证明这两个模块能编译，要么红得有意义。
 
 ## ⚠️ 先读这一段：这份代码是什么、不是什么
 
@@ -112,10 +125,19 @@ mvn -f proxy/pom.xml -pl core test
 
 改回来：
 ```bash
-mv proxy/core/src/main/java/com/amazon/aws/pix/core/xml/XmlSigner.java.bak \
-   proxy/core/src/main/java/com/amazon/aws/pix/core/xml/XmlSigner.java
+git checkout -- proxy/core/src/main/java/com/amazon/aws/pix/core/xml/XmlSigner.java
+rm -f proxy/core/src/main/java/com/amazon/aws/pix/core/xml/XmlSigner.java.bak
 mvn -f proxy/pom.xml -pl core test   # 应重新全绿
 ```
+
+> ⚠️ **不要用 `mv …XmlSigner.java.bak XmlSigner.java` 还原**（本文档此前给的就是这条，已更正）。`sed -i.bak` 产生的 `.bak` 保留的是**原文件的 mtime**，把它 `mv` 回去会得到一个比 `target/classes/…/XmlSigner.class` **更旧**的源文件；`maven-compiler-plugin` 的增量判定据此认为无需重编译，于是这一步测的仍是**变异过的 class**，`XmlSignerCaIssuedCertificateTest` 会再次变红——一个纯粹由还原方式造成的**假红**。
+>
+> 实测证据（2026-09-19，本地 JDK 11.0.32 / Maven 3.9.9）：`mv` 还原后 `git status` 干净、源码第 218 行确为 `getIssuerX500Principal()`，但
+> ```
+> javap -p -c target/classes/com/amazon/aws/pix/core/xml/XmlSigner.class | grep -oE 'get(Subject|Issuer)X500Principal'
+> →  getSubjectX500Principal      # class 里还是变异后的版本
+> ```
+> 用 `git checkout --`（写入当前时间的 mtime）或补一条 `touch`，或改用 `mvn clean test`，都能避免。
 
 > 如果你只做一项验证，就做这一项。它同时证明了：① 缺陷真实存在；② 修复有效；③ 测试有检出能力。
 
@@ -201,7 +223,45 @@ grep -n 'findCertificateValidityProblem\|CertificateValidityException' \
 - ✅ 测试夹具已用 openssl 本地验证 Subject ≠ Issuer；
 - ⚠️ **Java 改动的编译与测试由 GitHub Actions 完成，不是在本地**。请以 Actions 的 `core` job 结果为准。若该 job 为红色，说明改动有编译或测试问题，**此时不要使用这份代码**，请开 issue 或直接联系。
 
+> **本节描述的是「生成这些修复时」的状态，已不是当前唯一证据。** 2026-09-19 在一台独立机器上完成了本机复核（JDK 11 + Maven 实装），结果见 **第 4.1 节**——包括变异测试、门禁阴性对照、以及对上游缺陷状态的逐项对照。
+
 顺带一件事：CI 会回答一个悬而未决的问题——`proxy/core` 在**运行期**是否也需要 `--add-exports`（`pom.xml` 只在编译期声明了它，而 `Dockerfile` 的 `java -jar` 没有对应参数）。`core` job 的测试如果通过，说明 JDK 11 运行期访问那两个内部包没问题；如果报 `IllegalAccessError`，则实证确认了这个升级隐患。
+
+**这个问题已在 2026-09-19 的独立复核中实测结论（见第 4.1 节）：JDK 11 运行期不需要，JDK 17 会炸。**
+
+## 4.1 独立复核实测结果（2026-09-19，非 CI，aarch64 本机）
+
+在一台**与生成修复的机器无关**的 Amazon Linux 2023 / **aarch64** 机器上，用用户级安装的 **Corretto 11.0.32 + Maven 3.9.9 + ShellCheck 0.10.0**（无 root、无 Docker）完整重跑了第 2、3 节的全部可本地验证项：
+
+| 验证项 | 结果 |
+|---|---|
+| 基线提交 == 上游 `master` 顶点 | ✅ `fa20042…`，`merge-base` 一致 |
+| `git diff --stat upstream/master` 的改动文件集 | ✅ 10 个文件，**无声称之外的改动** |
+| `mvn -pl core test` | ✅ **5 tests / 0 failures**（`XmlSignerCaIssuedCertificateTest` 3 + `XmlSignerTest` 1 + `Iso20022XmlSignerTest` 1） |
+| **变异测试**（缺陷 1 改回上游写法） | ✅ `XmlSignerCaIssuedCertificateTest` **2 个方法变红**，断言信息精确指出 `expected:<…O=Test PIX Issuing CA…> but was:<…O=Test PSP…>`；`Iso20022XmlSignerTest`（自签）**依然绿** |
+| 夹具 Subject ≠ Issuer | ✅ `O=Test PSP, CN=pix-signature-test` vs `O=Test PIX Issuing CA` |
+| 缺陷 2：`AuditLog` 键 vs README 列 | ✅ 产出 10 键，两个 README 各声明 `request_query` 1 次；上游实测为 **10 键 vs Glue `Columns` 块 9 列**（另 4 个 `name:` 是分区键），本文档的 10-vs-9 说法准确 |
+| `audit-schema` 门禁 + **阴性对照** | ✅ 当前 exit 0；删掉 `README-KMS.md` 的 `request_query` 行后 exit 1 并指名缺失列——门禁**有检出能力** |
+| 缺陷 3：`bash -n` / `shellcheck -S warning` / 三条 grep | ✅ 全通过，`shellcheck` **零告警**；上游版实测为 `Hsms[0]`、`while true` 无超时、`java -jar` 非 `exec` |
+| 缺陷 4：`putRecord` 在 `try` 内、`catch` 记 `AUDIT DELIVERY FAILED` | ✅ `LogRequestResponseProcessor.java:59,63,64`；上游版该调用**无任何 try/catch** |
+| 缺陷 5：`findCertificateValidityProblem` / `CertificateValidityException` | ✅ `XmlSigner.java:150,154,168,188`；上游版为 `catch (Exception)` → `return false` |
+| RSA 指数 | ✅ 本 fork `65537` 共 2 处（第 82、202 行），上游同两处均为 `65541` |
+| `kms + simulator` 红叉归因 | ✅ 本地**同样错误复现**；`proxy/kms/pom.xml` 相对上游 **diff 为空**，确认与第 1–5 项无关（详见第 0 节） |
+
+**JDK 内部包的运行期行为（原悬而未决的问题，现已实测）：**
+
+- **JDK 11：运行期不需要 `--add-exports`。** `surefire` 没有 `argLine`，测试仍全绿——因为 JDK 9–15 的默认 `--illegal-access=permit` 会把 JDK 8 时代的包开放给 unnamed module。
+- **JDK 17：运行期直接失败。** 同一份代码用 Corretto 17.0.20 跑，**编译成功**（`pom.xml` 的 `compilerArgs` 仍生效）但**运行期 3 个测试报错**：
+  ```
+  IllegalAccessError: class com.amazon.aws.pix.core.xml.Iso20022URIDereferencer (in unnamed module)
+  cannot access class com.sun.org.apache.xml.internal.security.signature.XMLSignatureInput
+  (in module java.xml.crypto) because module java.xml.crypto does not export
+  com.sun.org.apache.xml.internal.security.signature to unnamed module
+  ```
+- 因此第 5 节「依赖两个 JDK 内部包（升级 JDK 高风险）」**不再是推断，而是实测事实**，且失败形态是**编译期静默通过、运行期每笔签名都炸**——最难在上线前发现的那一类。
+- **当前没有活跃缺陷**：两个 `Dockerfile` 都是 `FROM amazoncorretto:11`。但凡是 bump 基础镜像到 17/21（例如为了上 CloudHSM SDK 5，其 JCE 只兼容 OpenJDK 17/21/25）的人，**必须同时**给 `wrapper_script.sh` 的 `exec java`（可经 `JAVA_OPTS`）和 `surefire` 的 `argLine` 补上这两个 `--add-exports`，否则 CI 全绿而生产全挂。
+
+**本次复核未覆盖**（与本机能力无关的硬约束）：Tier 2 端到端（需 AWS 账号 + CloudHSM 集群）、多 HSM 故障转移（需 ≥2 HSM 集群）、`cloudhsm` 模块编译（`cavium` 需构建时下载 `cloudhsm-client-jce-latest.el7.**x86_64**.rpm` 且需 `rpm` 工具，本机为 **aarch64** 且无 root）。另注：第 5 节提到 `netty-tcnative` 锁 `linux-x86_64`，本机 aarch64 也印证了该模块无法在 Graviton 上直接跑。
 
 ---
 
@@ -220,7 +280,7 @@ grep -n 'findCertificateValidityProblem\|CertificateValidityException' \
 | **证书生命周期** | 无到期监控；配置只在启动时读取，**换证书必须重新部署** |
 | **审计与隐私** | 审计日志含报文全文，即含姓名、CPF、账号、金额——属 **LGPD** 管辖的敏感数据，示例零处理。S3 未配加密/Object Lock（**Object Lock 只能建桶时启用**）；Firehose `errorOutputPrefix` 与 `error/` 前缀告警未配 |
 | **可观测性** | 无指标、无追踪、无告警。验签失败不区分"签名不匹配"（安全事件）与"证书过期/配置错误"（运维故障） |
-| **架构** | HSM 客户端与应用同容器；依赖两个 **JDK 内部包**（升级 JDK 高风险）；`netty-tcnative` 锁定 `linux-x86_64`，**不能直接上 Graviton**；Quarkus 1.7.0 / Camel-Quarkus 1.0.0 均为 2020 年版本 |
+| **架构** | HSM 客户端与应用同容器；依赖两个 **JDK 内部包**——**已实测**：JDK 11 运行期可用（靠默认 `--illegal-access=permit`），**JDK 17 编译通过但运行期 `IllegalAccessError`，每笔签名都炸**，见第 4.1 节；`netty-tcnative` 锁定 `linux-x86_64`，**不能直接上 Graviton**；Quarkus 1.7.0 / Camel-Quarkus 1.0.0 均为 2020 年版本 |
 | **构建可复现性** | `cavium` 模块每次构建都拉 `cloudhsm-client-jce-latest.rpm`，依赖版本区间 `[3.0.0,)` —— **构建不可复现** |
 | **范围** | 只覆盖**出向同步提交**（我们 → BACEN）。缺 BACEN **异步回推**消息的入向链路，以及授权、撤销（SAGA）、生效等互补架构。粗估只覆盖完整 Pix 接入的 **30–40%** |
 
@@ -271,7 +331,22 @@ composite `65541` to `65537` (upstream PR #4 proposed this in 2021 and was close
 sed -i.bak 's/getIssuerX500Principal()/getSubjectX500Principal()/' \
     proxy/core/src/main/java/com/amazon/aws/pix/core/xml/XmlSigner.java
 mvn -f proxy/pom.xml -pl core test        # XmlSignerCaIssuedCertificateTest must FAIL
+
+# Restore with git checkout, NOT by moving the .bak back: the .bak keeps the original
+# mtime, so Maven's incremental compiler skips recompilation and the re-run silently
+# tests the mutated class again. See section 2 (Tier 1) for the measured evidence.
+git checkout -- proxy/core/src/main/java/com/amazon/aws/pix/core/xml/XmlSigner.java
+rm -f proxy/core/src/main/java/com/amazon/aws/pix/core/xml/XmlSigner.java.bak
+mvn -f proxy/pom.xml -pl core test        # green again: 5 tests, 0 failures
 ```
+
+**Independently re-verified on 2026-09-19** on a separate aarch64 Amazon Linux 2023 host with
+user-level Corretto 11 + Maven 3.9.9 + ShellCheck 0.10.0: all locally verifiable checks pass,
+the mutation test detects the reverted defect, the audit-schema gate fails as required under a
+negative control, and the `kms` red mark is confirmed to be artifact resolution only — the
+module compiles once `kms-jce-provider` is built from source and installed locally. The
+previously open `--add-exports` question is now settled: **JDK 11 needs no runtime flag, JDK 17
+compiles but throws `IllegalAccessError` on every signing path.** See section 4.1.
 
 **The upstream disclaimer still applies in full**: this is still not a basis for a final
 BACEN integration. See section 5 above for the substantial gaps that remain — SDK 3, no HSM

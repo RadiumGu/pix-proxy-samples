@@ -8,6 +8,24 @@
 
 ---
 
+## 0. CI 实测结果（2026-09-19，供直接引用）
+
+推送到 `fixes/p0-production-hardening` 后触发的 [Actions 运行](https://github.com/RadiumGu/pix-proxy-samples/actions/runs/35454878877)：
+
+| Job | 结果 | 说明 |
+|---|---|---|
+| **`core - build + test`**（签名逻辑） | ✅ **success** | 缺陷 1、5 的修复与 `XmlSignerCaIssuedCertificateTest` 编译并全部通过 |
+| `wrapper_script.sh - shellcheck` | ✅ success | 缺陷 3 的脚本改动 |
+| `audit schema`（字段/列对齐门禁） | ✅ success | 缺陷 2 |
+| `cloudhsm - compile` | ✅ success | 缺陷 3、4 涉及的模块 |
+| `kms + simulator - compile` | ❌ **failure** | ⚠️ **与本次改动无关**，见下 |
+
+**`kms + simulator - compile` 失败原因与本次修复无关**：错误是
+```
+Could not find artifact software.amazon.awssdk:kms-jce-provider:jar:1.0.0 in central
+```
+这个坐标在 **`proxy/kms/pom.xml`**（本次未改动的文件）里，是上游预先存在的问题——`kms-jce-provider` 来自 `aws-samples/aws-kms-jce` 项目，从未发布到 Maven Central。上游自己也没有 CI 跑过这个模块（见第 6 节），所以这个缺陷至今没被发现。**它独立于第 1–5 项，不在本 fork 的修复范围内**，如需修复应指向 `aws-kms-jce` 的实际发布坐标或改用本地安装。
+
 ## ⚠️ 先读这一段：这份代码是什么、不是什么
 
 **上游的免责声明依然完全适用，并未因这些修复而失效：**

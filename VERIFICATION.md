@@ -328,8 +328,12 @@ grep -n 'findCertificateValidityProblem\|CertificateValidityException' \
 
 上游自 2024-10-17 起无实质提交。可观察到的模式：**dependabot 的 PR 被合并，人类的 PR 被关闭**——
 
-- [PR #4](https://github.com/aws-samples/pix-proxy-samples/pull/4)（修 RSA 指数，两行）：挂 3 年 2 个月，关闭未合并，零评论；
-- [PR #10](https://github.com/aws-samples/pix-proxy-samples/pull/10)（修 CVE-2024-47554，由原博客作者之一提交）：被关闭，而 dependabot 提的同一修复 [PR #12](https://github.com/aws-samples/pix-proxy-samples/pull/12) 在一分钟前被合并。
+- [PR #4](https://github.com/aws-samples/pix-proxy-samples/pull/4)（修 RSA 指数，两行）：创建 2021-08-16，关闭 2024-10-17，**挂了 1158 天（3 年 2 个月）**，`merged=false`，`comments=0` + `review_comments=0`（零评论）；
+- [PR #10](https://github.com/aws-samples/pix-proxy-samples/pull/10)（修 CVE-2024-47554）：提交者 `llins` 是**本仓库贡献最多的人**——23 次提交，多于任何其他人（第二名人类 `joaoarag` 3 次，dependabot 10 次）。该 PR 被关闭未合并，而 dependabot 提的同一修复 [PR #12](https://github.com/aws-samples/pix-proxy-samples/pull/12) 在此之前 **19 秒**被合并（`#12 merged_at=2024-10-17T20:22:48Z`，`#10 closed_at=2024-10-17T20:23:07Z`）。本文档此前写「一分钟前」，实测是 19 秒；也曾把提交者描述为「原博客作者之一」，那个说法无法从 GitHub 核实，已换成可核实的贡献者排名。
+
+**「无实质提交」可以说得更准**：上游 `master` 顶点就是 `fa20042`（2024-10-17），**此后零提交**；而 2024-10-17 那天的 5 个提交**全部是 dependabot 的版本升级与其合并**。最后一次非 dependabot 的提交是 **2022-02-03 的 `02985fdb` "xml parsing fix"**——距今 4 年 7 个月。
+
+上报的 5 个 issue 现状（2026-09-19 实测）：[#15](https://github.com/aws-samples/pix-proxy-samples/issues/15)–[#19](https://github.com/aws-samples/pix-proxy-samples/issues/19) **全部存在且 state=open**，标题与第 1 节的 5 项缺陷一一对应。
 
 因此本 fork 不等上游合并。5 个缺陷已作为 [#15](https://github.com/aws-samples/pix-proxy-samples/issues/15)–[#19](https://github.com/aws-samples/pix-proxy-samples/issues/19) 上报，若上游采纳，本 fork 会同步。
 

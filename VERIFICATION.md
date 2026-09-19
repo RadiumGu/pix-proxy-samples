@@ -396,7 +396,32 @@ private boolean secureValidation(XMLCryptoContext ctx) {        // :56
 - `explicitlyDisablingSecureValidationWouldAcceptFileUriReference` —— **阳性对照**：显式设成 `FALSE` 后同一文档通过，证明上面两条不是空断言，并把「改成 false 的代价」钉在测试里；
 - `normallySignedDocumentStillVerifies` —— 正常签名不受影响。
 
-### 7.4 复核确认的一处**设计取舍**，不是缺陷
+### 7.4 两个既有修复互相打脸：证书过期时审计记录会整体丢失（已修）
+
+这是本轮最有价值的一条，因为它**不是上游的缺陷，而是这个 fork 自己的两个修复相互作用产生的**。
+
+- 修复 4（上游 #18）的目的：审计写入失败**不能**让交易失败。
+- 修复 5（上游 #19）的手段：证书有效期问题**抛异常** `CertificateValidityException`，而不是返回 `false`。
+
+问题在于两条路由里验签都排在审计写入**之前**：
+
+| 架构 | 顺序 | 出处 |
+|---|---|---|
+| CloudHSM | `…→ VerifyResponseProcessor → LogRequestResponseProcessor` | `PixCloudHSMProxyRouteBuilder:112-119` |
+| KMS | `signer.verify(response); logger.log(request, response);` | `ProxyHandler:23-24` |
+
+所以 BACEN 签名证书一过期，`verify()` 抛出的异常会**中止整条路由 / 让 Lambda handler 异常退出**，审计写入那一步根本执行不到——**一条审计记录都不会落**。而且过期是持续状态：在有人轮换证书之前，**每一笔**交易都既失败又无审计。修复 4 拦住了「审计故障毁掉交易」，这里是反方向的同一类问题：「验签故障毁掉审计」。
+
+**修法**（两个调用点都改，因为它们喂同一张 Glue 表）：在验签调用点捕获 `CertificateValidityException`，交易仍按 500 失败（响应确实不可信），但把原因写进审计字段并让流程继续走到审计写入。新增第三个取值 `PixConstants.SIGNATURE_VALID_CERTIFICATE_ERROR = "certificate-validity-error"`，与 `"true"` / `"false"` 并列——Glue 列 `response_signature_valid` 本就是 STRING，**不需要改 schema**（`audit-schema` 门禁复跑通过）。
+
+- `VerifyResponseProcessor`（CloudHSM）
+- `Signer.verify`（KMS）
+
+**取证**：新增 `XmlSignerExpiredCertificateTest`（2 个方法，core 测试 9 → 11）。用 openssl 造了一张有效期为 2020-01-01 → 2020-02-01 的已过期自签证书夹具 `expired-cert.p12`，先断言夹具**确实**已过期（否则整个测试什么都没测），再断言 `verify()` **抛** `CertificateValidityException` 且 cause 是 `CertificateExpiredException`。
+
+**诚实交代边界**：上面那两条「异常会中止路由 / handler」是**读路由与 handler 源码**得出的（行号已给），不是在真实 Camel 上下文与 Lambda 运行时里跑出来的——本机没有起 Camel 路由与 API Gateway 的条件。异常确实会从 `verify()` 抛出这一点，是**实测**的。
+
+### 7.5 复核确认的一处**设计取舍**，不是缺陷
 
 第 1 节说缺陷 5 的症状是「每笔交易变 500」。读代码确认：修复后**500 依然存在**——`XmlSigner.verify()` 对证书有效期问题抛 `CertificateValidityException`（RuntimeException），而 `VerifyResponseProcessor:27` 只在 `verify()` 返回 `false` 时设 500，异常则直接冒泡成 Camel 错误。所以这个修复改变的是**可诊断性**（日志明确说"证书轮换问题，不是签名不匹配"）而**不是** HTTP 结果。文档的表述容易被读成"修了就不 500 了"，实际不是；真正要停掉 500 需要业务决策（过期证书是否拒绝交易），属第 5 节「必须由合规裁定」那一类。
 

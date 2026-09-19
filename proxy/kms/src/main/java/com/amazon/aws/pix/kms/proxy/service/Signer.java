@@ -20,6 +20,7 @@ import java.security.Security;
 import java.security.cert.X509Certificate;
 
 import static com.amazon.aws.pix.core.util.PixConstants.PIX_HEADER_SIGNATURE_VALID;
+import static com.amazon.aws.pix.core.util.PixConstants.SIGNATURE_VALID_CERTIFICATE_ERROR;
 
 @Slf4j
 @Startup
@@ -51,11 +52,27 @@ public class Signer {
 
     public void verify(APIGatewayProxyResponseEvent response) {
         if (isSuccessfulResponse(response.getStatusCode()) && isNotBlank(response.getBody())) {
-            if (xmlSigner.verify(response.getBody())) {
-                response.getHeaders().put(PIX_HEADER_SIGNATURE_VALID, "true");
-            } else {
+            try {
+                if (xmlSigner.verify(response.getBody())) {
+                    response.getHeaders().put(PIX_HEADER_SIGNATURE_VALID, "true");
+                } else {
+                    response.setStatusCode(500);
+                    response.getHeaders().put(PIX_HEADER_SIGNATURE_VALID, "false");
+                }
+            } catch (XmlSigner.CertificateValidityException e) {
+                // Must NOT escape: ProxyHandler calls signer.verify(response) BEFORE
+                // logger.log(request, response), so letting this propagate out of the Lambda
+                // handler means the Firehose audit record is never written - and an expired
+                // BACEN certificate affects every message until it is rotated, so the audit
+                // gap would not be one transaction but all of them.
+                //
+                // Same reasoning as VerifyResponseProcessor in the CloudHSM architecture; the
+                // two verify call sites must agree, since both feed the same Glue schema.
+                log.error("certificate validity problem while verifying the BACEN response - "
+                        + "failing the transaction with 500 but still writing the audit record. "
+                        + "Rotate the trusted certificate; this is NOT a signature mismatch.", e);
                 response.setStatusCode(500);
-                response.getHeaders().put(PIX_HEADER_SIGNATURE_VALID, "false");
+                response.getHeaders().put(PIX_HEADER_SIGNATURE_VALID, SIGNATURE_VALID_CERTIFICATE_ERROR);
             }
         }
     }

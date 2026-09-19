@@ -10,7 +10,9 @@
 
 ## 0. CI 实测结果（2026-09-19，供直接引用）
 
-**当前状态：`master` 上 5 个 job 全绿** —— [run 35456018649](https://github.com/RadiumGu/pix-proxy-samples/actions/runs/35456018649)（提交 `13349dc`）。这是本仓库首次全绿：唯一长期失败的 `kms + simulator` job 已修好（原因与修法见本节末尾）。
+**当前状态：`master` 上 5 个 job 全绿** —— [run 35458232223](https://github.com/RadiumGu/pix-proxy-samples/actions/runs/35458232223)（提交 `50e61bc`）。自 `13349dc` 修好唯一长期失败的 `kms + simulator` job 起（[首次全绿 run 35456018649](https://github.com/RadiumGu/pix-proxy-samples/actions/runs/35456018649)，原因与修法见本节末尾），**连续 9 次推送全部 5/5 success**。
+
+`proxy/core` 的测试数在本轮独立复核中从 **5 增至 14**（新增 `XmlSignerSecureValidationTest` 4 个、`XmlSignerExpiredCertificateTest` 2 个、`WellKnownTestCertificatesTest` 3 个，见第 7 节），7 个 reactor 模块全部编译通过。
 
 下表是最初那次 [Actions 运行](https://github.com/RadiumGu/pix-proxy-samples/actions/runs/35454878877)（推送 `fixes/p0-production-hardening` 触发），保留下来是因为它记录了 `kms` 红叉的原始现场：
 

@@ -56,6 +56,28 @@ A private subnet with a route table that routes internet traffic (0.0.0.0/0) to 
 
 - An **active AWS CloudHSM cluster** with at least one active HSM. The HSMs should be created in the private subnets. You can follow the Getting Started with [AWS CloudHSM guide](https://docs.aws.amazon.com/cloudhsm/latest/userguide/create-cluster.html) to create and initialize the CloudHSM cluster.
 
+> ### ⚠️ This prerequisite can no longer be satisfied as written
+>
+> This sample's code is hard-wired to **CloudHSM Client SDK 3** (`com.cavium.cfm2.LoginManager`,
+> `PARTITION_1`, `key_mgmt_util`, `cloudhsm-client-jce-latest.el7.x86_64.rpm`), which only works with
+> the `hsm1.medium` HSM type. Per AWS's own
+> [deprecation notice](https://docs.aws.amazon.com/cloudhsm/latest/userguide/compliance-dep-notif.html)
+> and [HSM types page](https://docs.aws.amazon.com/cloudhsm/latest/userguide/hsm-types.html):
+>
+> * **new `hsm1.medium` clusters cannot be created since April 2025**;
+> * `hsm1.medium` **reached end of support on 2026-03-31**;
+> * existing `hsm1.medium` clusters have been auto-migrated to `hsm2m.medium` since January 2026;
+> * `hsm2m.medium` **requires Client SDK 5.9.0 or later**.
+>
+> So the old HSM type can no longer be created and this code cannot talk to the new one. Making the
+> CloudHSM path work again requires **porting SDK 3 to SDK 5** (a different API) *and* moving to
+> JDK 17/21 (SDK 5's JCE supports OpenJDK 17/21/25 only) *and* adding the two `--add-exports` flags,
+> because this project throws `IllegalAccessError` at runtime on JDK 17 without them. Those three
+> changes are one package.
+>
+> **The KMS architecture in [README-KMS.md](README-KMS.md) is unaffected** and is the path to use if
+> you just want to run the sample. See [VERIFICATION.md](VERIFICATION.md) for the measured evidence.
+
 - The **AWS CloudHSM client** installed and configured to connect to the CloudHSM cluster. Optionally, you can use an Amazon Linux 2 EC2 instance with the CloudHSM client installed and configured. The client instance should be launched in the public subnet. You can again refer to [Getting Started With AWS CloudHSM](https://docs.aws.amazon.com/cloudhsm/latest/userguide/getting-started.html) to configure and connect the client instance. Also, install the [AWS CloudHSM Dynamic Engine for OpenSSL](https://docs.aws.amazon.com/cloudhsm/latest/userguide/openssl-library-install.html).
 
 - The **CO** and **CU credentials** created: CO (crypto officer) and CU (crypto user) by following the steps in the [user guide](https://docs.aws.amazon.com/cloudhsm/latest/userguide/manage-hsm-users.html#create-user).

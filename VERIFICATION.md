@@ -49,6 +49,22 @@ mvn -B -f proxy/pom.xml -pl core,kms,test package -DskipTests   # 此时通过
 
 这个 fork 修的是**5 个具体缺陷**，不是把示例变成了生产系统。仍然存在的重大差距见 [第 5 节](#5-本-fork-没有修的部分必读)——包括 CloudHSM Client SDK 3 已是上一代、HSM 会话失效无重连、mTLS 私钥必须可导出、无 XSD 校验、审计日志含个人数据未做 LGPD 处理等。
 
+### ⚠️ CloudHSM 路径已不可部署（2026-09-19 复核发现，本文档此前未提）
+
+**按 `README-CloudHSM.md` 走，你会卡在第一步——创建集群。** 这不是代码缺陷，是外部时间线已经走过去了，三条事实叠起来把这条路封死：
+
+| 事实 | 来源 |
+|---|---|
+| **2025 年 4 月起无法新建 `hsm1.medium` 集群** | [AWS 弃用公告](https://docs.aws.amazon.com/cloudhsm/latest/userguide/compliance-dep-notif.html) |
+| `hsm1.medium` **已于 2026-03-31 结束支持**（该日期已过） | 同上 |
+| 唯一可新建的 `hsm2m.medium` **要求 Client SDK 5.9.0+** | [HSM 机型页](https://docs.aws.amazon.com/cloudhsm/latest/userguide/hsm-types.html) |
+
+而本仓库的代码**硬绑在 SDK 3** 上（`com.cavium.cfm2.LoginManager`、`PARTITION_1`、`key_mgmt_util`、`cloudhsm-client-jce-latest.el7.x86_64.rpm`）。所以不是「能跑但用了旧 SDK」，而是：**旧机型已经建不出来，新机型这份代码连不上。** AWS 的迁移指引也明说迁到 hsm2m「必须升级到最新版 client SDK」。
+
+要真正跑起来 CloudHSM 这一半，需要的是**把 SDK 3 重写成 SDK 5**（API 完全不同），并且同时把 JDK 抬到 17/21（SDK 5 的 JCE 只支持 OpenJDK 17/21/25）——而第 4.1 节已实测 JDK 17 下本项目**运行期必炸**，除非补上那两个 `--add-exports`。这三件事是一个包，不能分开做。
+
+**KMS 那一半不受此影响**（`README-KMS.md`，无 CloudHSM 依赖），代价是签名密钥放在 KMS 而非机构独占的 HSM 分区里。若你只是想看这个示例怎么跑，走 KMS 路径。
+
 **把这份代码交给任何人时，请连同本文档第 5 节一起交付。**
 
 ---
@@ -274,9 +290,9 @@ grep -n 'findCertificateValidityProblem\|CertificateValidityException' \
 | 类别 | 仍存在的问题 |
 |---|---|
 | **密钥与合规** | mTLS 私钥**必须可导出**才能用（Netty 的 `SslProvider.OPENSSL` + `keyManager(PrivateKey,…)` 需要真实密钥字节），因此不满足"私钥始终处于机构独占控制之下"的最严要求。签名私钥不受影响（不可导出）。**注意：mTLS 私钥无法伪造交易，伪造交易需要签名私钥** |
-| **SDK 代际** | 用的是 **CloudHSM Client SDK 3**（`com.cavium`、`key_mgmt_util`、`PARTITION_1`）。当前是 **SDK 5**，API 完全不同。SDK 5 的 JCE 只兼容 OpenJDK 17/21/25 |
-| **HSM 会话** | 会话失效**无重连机制**（只在启动时登录一次）。表现为"跑几天后所有签名失败、重启就好"。SDK 5 已内建改进的登录状态管理 |
-| **HSM 机型** | `hsm1.medium` 的 FIPS 证书 #4218 已于 2026-01-04 移入 CMVP 历史列表，应改用 `hsm2m.medium`（FIPS 140-3 L3） |
+| **SDK 代际（已升级为阻断项）** | 用的是 **CloudHSM Client SDK 3**（`com.cavium`、`key_mgmt_util`、`PARTITION_1`、`cloudhsm-client-jce-latest.el7` rpm）。当前是 **SDK 5**，API 完全不同。SDK 5 的 JCE 只兼容 OpenJDK 17/21/25——**与本项目的 JDK 11 及那两个内部包冲突**（见第 4.1 节），所以升级 SDK 与升级 JDK 必须一起做，而且后者已实测会炸 |
+| **HSM 会话** | 会话失效**无重连机制**（只在启动时登录一次，`R:175`）。表现为"跑几天后所有签名失败、重启就好"。SDK 5 已内建改进的登录状态管理 |
+| **HSM 机型（本文档原先严重低估）** | 原文只说 `hsm1.medium` 的 FIPS 证书 #4218 已于 2026-01-04 移入 CMVP 历史列表、应改用 `hsm2m.medium`。**这个说法本身没错但远不够**——按 AWS 自己的[弃用公告](https://docs.aws.amazon.com/cloudhsm/latest/userguide/compliance-dep-notif.html)与[机型页](https://docs.aws.amazon.com/cloudhsm/latest/userguide/hsm-types.html)：①**2025 年 4 月起就无法新建 `hsm1.medium` 集群**；②`hsm1.medium` 已于 **2026-03-31 结束支持**（该日期已过）；③2026 年 1 月起 AWS 开始把存量 hsm1 集群**自动迁移**到 `hsm2m.medium`；④`hsm2m.medium` **要求 Client SDK 5.9.0 及以上**。`hsm2m.medium` 的证书是 [#4703](https://csrc.nist.gov/projects/cryptographic-module-validation-program/certificate/4703)（FIPS 140-3 L3）。**净结论见下面的「⚠️ CloudHSM 路径已不可部署」** |
 | **输入校验** | 无 ISO 20022 **XSD 模式校验**（全仓零 `SchemaFactory` / `setSchema` / `.xsd` 校验代码）。报文大小上限**未显式配置**——但**并非没有上限**：实际生效的是 Camel netty-http 的默认 `chunkedMaxContentLength=1048576`（1 MB），由服务端管道里的 `HttpObjectAggregator` 施加（`camel-netty-http-3.4.2` 的 `HttpServerInitializerFactory` 字节码实证）。所以风险不是「可 OOM」，而是**这个上限是隐式的**：既没写进配置也没写进文档，调高它或改动端点配置的人不会意识到自己在放大攻击面 |
 | **TLS** | 未启用主机名校验（靠显式信任 BACEN 证书即证书锁定缓解）；`bcbEndpoint` 未显式配置超时 |
 | **证书生命周期** | 无到期监控；配置只在启动时读取，**换证书必须重新部署** |

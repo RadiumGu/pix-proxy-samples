@@ -421,7 +421,31 @@ private boolean secureValidation(XMLCryptoContext ctx) {        // :56
 
 **诚实交代边界**：上面那两条「异常会中止路由 / handler」是**读路由与 handler 源码**得出的（行号已给），不是在真实 Camel 上下文与 Lambda 运行时里跑出来的——本机没有起 Camel 路由与 API Gateway 的条件。异常确实会从 `verify()` 抛出这一点，是**实测**的。
 
-### 7.5 复核确认的一处**设计取舍**，不是缺陷
+### 7.5 仓库里带着私钥的「BACEN」证书，会被文档指引写进生产同一个参数（已加守卫）
+
+`proxy/test/src/main/docker/ssl/` 里同时放着 `sig.cer` / `mtls.cer` **和它们的私钥** `sig.key` / `mtls.key`。实测这两个 `.key` 是**真的 RSA 2048 私钥**（`openssl pkey` 解析出 `Private-Key: (2048 bit, 2 primes)`），且与各自证书**公钥指纹一致**（配对成立）。两张证书的主体是：
+
+```
+C=BR, ST=DF, L=Brasilia, O=BCB, OU=PIX, CN=*.pi.rsfn.net.br
+notBefore=Jul  5 2020   notAfter=Jul  3 2030
+```
+
+即 **BACEN 真实生产域 RSFN 的通配主体，有效期到 2030 年**。作为模拟器，这本身没问题。**有问题的是文档把它们写进生产用的同一个参数**：`README-CloudHSM.md:469`/`502` 与 `README-KMS.md:201`/`234` 创建 `BcbSignatureCertificate` 与 `BcbMtlsCertificate` 时，各自带一段「TO USE THE TEST - SIMULATOR, use:」并给出上面这两张证书的内容。
+
+于是从模拟器切到真 BACEN 的动作，等于「**记得改那个参数**」。忘了改的后果是：代理会接受由一把**公开在互联网上的私钥**签出的响应，而系统里**没有任何东西会察觉**——证书格式正确、2030 年前都在有效期内、并且按定义就在信任库里，所以连修复 5 新加的有效期检查也保持沉默。`.gitignore` 也没有覆盖这些文件，文档里零提醒。
+
+**已加的守卫**：新增 `WellKnownTestCertificates`，按 **SHA-256 指纹**识别这两张证书（`sig.cer` = `2ECA12B3…92F3`，`mtls.cer` = `8F43D131…C274`），命中就打一条 ERROR 日志，点名「正在信任一张私钥公开的模拟器证书，若本进程要对接真 BACEN，请立刻替换参数」。
+
+两个设计决定值得说明：
+
+- **按指纹而不是按主体匹配**。主体就是 BACEN 的真实 DN，按主体匹配会把**真**证书也一起报警，守卫就废了。
+- **只告警，不拒绝启动**。模拟器流程是文档正式支持的用法，硬失败会直接打断 README 指引的路径。请在任何「本该对接真 BACEN」的环境里对这条日志配告警。
+
+挂载点选在 `KeyStoreUtil.getCertificates(String)`：`generateTrustStore(String,String)` 处理 `BcbSignatureCertificate` 时会委派到它，mTLS 路径处理 `BcbMtlsCertificate` 时直接调它——**一处覆盖两种架构的两条信任路径，且绕不过去**。
+
+**取证**：新增 `WellKnownTestCertificatesTest`（3 个方法，core 测试 11 → 14），含**阴性对照** `doesNotFlagAnUnrelatedCertificate`——若守卫对无关证书也报警，它在真实环境里就会被当噪音忽略，所以这条对照和阳性断言一样重要。
+
+### 7.6 复核确认的一处**设计取舍**，不是缺陷
 
 第 1 节说缺陷 5 的症状是「每笔交易变 500」。读代码确认：修复后**500 依然存在**——`XmlSigner.verify()` 对证书有效期问题抛 `CertificateValidityException`（RuntimeException），而 `VerifyResponseProcessor:27` 只在 `verify()` 返回 `false` 时设 500，异常则直接冒泡成 Camel 错误。所以这个修复改变的是**可诊断性**（日志明确说"证书轮换问题，不是签名不匹配"）而**不是** HTTP 结果。文档的表述容易被读成"修了就不 500 了"，实际不是；真正要停掉 500 需要业务决策（过期证书是否拒绝交易），属第 5 节「必须由合规裁定」那一类。
 

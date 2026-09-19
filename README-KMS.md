@@ -184,6 +184,17 @@ errorOutputPrefix: error/spi/year=!{timestamp:yyyy}/month=!{timestamp:MM}/day=!{
 ```
 <DICT_ENDPOINT>
 ```
+> **⚠️ The simulator certificate below has a PUBLIC private key.** It ships in this repository at
+> `proxy/test/src/main/docker/ssl/` next to `sig.key` / `mtls.key`, and its subject is BACEN's real
+> production domain (`O=BCB, OU=PIX, CN=*.pi.rsfn.net.br`, valid until 2030-07-03). Anyone who can
+> read this repository can forge a response that a proxy trusting it will accept as signed by BACEN.
+>
+> This parameter is the SAME one production uses, so switching from the simulator to real BACEN is
+> "remember to change this value" - and nothing else in the system would notice if you forget: the
+> certificate is well-formed, in date, and in the trust store by construction. The application logs
+> an ERROR naming this certificate at startup when it is trusted (see `WellKnownTestCertificates`);
+> alarm on that line in any environment meant to reach real BACEN.
+
 TO USE THE TEST - SIMULATOR, use:
 ```
 test.pi.rsfn.net.br:8181

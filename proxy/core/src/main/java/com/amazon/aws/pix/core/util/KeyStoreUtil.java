@@ -71,7 +71,13 @@ public abstract class KeyStoreUtil {
     public static Collection<X509Certificate> getCertificates(String certificate) {
         CertificateFactory certificateFactory = CertificateFactory.getInstance("X.509");
         ByteArrayInputStream inputStream = new ByteArrayInputStream(certificate.getBytes(StandardCharsets.UTF_8));
-        return (Collection<X509Certificate>) certificateFactory.generateCertificates(inputStream);
+        Collection<X509Certificate> certificates =
+                (Collection<X509Certificate>) certificateFactory.generateCertificates(inputStream);
+        // Single funnel for both BACEN trust paths: generateTrustStore(String, String) delegates
+        // here for BcbSignatureCertificate, and the mTLS path calls this directly for
+        // BcbMtlsCertificate - so one check covers both architectures and cannot be bypassed.
+        WellKnownTestCertificates.warnIfWellKnownTestCertificate(certificates);
+        return certificates;
     }
 
     @SneakyThrows

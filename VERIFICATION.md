@@ -280,10 +280,10 @@ grep -n 'findCertificateValidityProblem\|CertificateValidityException' \
 | **输入校验** | 无 ISO 20022 **XSD 模式校验**（全仓零 `SchemaFactory` / `setSchema` / `.xsd` 校验代码）。报文大小上限**未显式配置**——但**并非没有上限**：实际生效的是 Camel netty-http 的默认 `chunkedMaxContentLength=1048576`（1 MB），由服务端管道里的 `HttpObjectAggregator` 施加（`camel-netty-http-3.4.2` 的 `HttpServerInitializerFactory` 字节码实证）。所以风险不是「可 OOM」，而是**这个上限是隐式的**：既没写进配置也没写进文档，调高它或改动端点配置的人不会意识到自己在放大攻击面 |
 | **TLS** | 未启用主机名校验（靠显式信任 BACEN 证书即证书锁定缓解）；`bcbEndpoint` 未显式配置超时 |
 | **证书生命周期** | 无到期监控；配置只在启动时读取，**换证书必须重新部署** |
-| **审计与隐私** | 审计日志含报文全文，即含姓名、CPF、账号、金额——属 **LGPD** 管辖的敏感数据，示例零处理。S3 未配加密/Object Lock（**Object Lock 只能建桶时启用**）；Firehose `errorOutputPrefix` 与 `error/` 前缀告警未配 |
+| **审计与隐私** | 审计日志含报文全文，即含姓名、CPF、账号、金额——属 **LGPD** 管辖的敏感数据，示例零处理（`AuditLog.java:34-35,50-51` 原样存 `request_body` / `response_body`；随仓库的测试报文里就有 `<Nm>Fulano da Silva</Nm>` 和 11 位 `<Id>`）。S3 未配加密 / Object Lock / 版本控制（**Object Lock 只能建桶时启用**）。**订正**：`errorOutputPrefix` 其实**两个 README 的两条流都配了**（`README-CloudHSM.md:363,372`、`README-KMS.md:140,149`），本文档此前写「未配」是错的。真正缺的是**针对那个已经存在的 `error/` 前缀的告警**——全仓零 CloudWatch 告警配置，所以投递失败的记录会静静堆在 `error/` 下而没有任何人知道 |
 | **可观测性** | 无指标、无追踪、无告警。验签失败不区分"签名不匹配"（安全事件）与"证书过期/配置错误"（运维故障） |
-| **架构** | HSM 客户端与应用同容器；依赖两个 **JDK 内部包**——**已实测**：JDK 11 运行期可用（靠默认 `--illegal-access=permit`），**JDK 17 编译通过但运行期 `IllegalAccessError`，每笔签名都炸**，见第 4.1 节；`netty-tcnative` 锁定 `linux-x86_64`，**不能直接上 Graviton**；Quarkus 1.7.0 / Camel-Quarkus 1.0.0 均为 2020 年版本 |
-| **构建可复现性** | `cavium` 模块每次构建都拉 `cloudhsm-client-jce-latest.rpm`，依赖版本区间 `[3.0.0,)` —— **构建不可复现** |
+| **架构** | HSM 客户端与应用同容器（`Dockerfile:4-9` 在跑应用的同一镜像里 `yum install` 三个 CloudHSM rpm）；依赖两个 **JDK 内部包**——**已实测**：JDK 11 运行期可用（靠默认 `--illegal-access=permit`），**JDK 17 编译通过但运行期 `IllegalAccessError`，每笔签名都炸**，见第 4.1 节；`netty-tcnative:2.0.31.Final` 的 classifier 是 **`linux-x86_64-fedora`**（`cloudhsm/proxy/pom.xml:99-104`）——不只锁 x86_64，还锁到 Fedora/RHEL 系的 OpenSSL，且 `Dockerfile` 装的三个 rpm 同样是 `el7.x86_64`，**不能直接上 Graviton**；Quarkus 1.7.0 / Camel-Quarkus 1.0.0 均为 2020 年版本（`proxy/pom.xml:17-18`，另 AWS SDK BOM 2.13.0、Lombok 1.18.12 亦同期） |
+| **构建可复现性** | 两处合起来导致不可复现：`cavium/pom.xml:32` 每次构建都拉 `cloudhsm-client-jce-latest.el7.x86_64.rpm`，再用 antrun 正则从 jar 文件名反推 `cloudhsm.version` 并 `install-file` 成 `com.cavium:cloudhsm:${cloudhsm.version}`；消费方 `cloudhsm/proxy/pom.xml:75` 用**版本区间** `[3.0.0,)` 接它（注意区间在 **proxy** 模块而非 cavium 模块，本文档此前把两者都记在 cavium 名下）。净效果是**构建产物取决于你构建那天 AWS 在 `latest` 上放了什么** |
 | **范围** | 只覆盖**出向同步提交**（我们 → BACEN）。缺 BACEN **异步回推**消息的入向链路，以及授权、撤销（SAGA）、生效等互补架构。粗估只覆盖完整 Pix 接入的 **30–40%** |
 
 ### 5.1 上表各项的取证（2026-09-19 独立复核）
@@ -301,6 +301,8 @@ grep -n 'findCertificateValidityProblem\|CertificateValidityException' \
 | `bcbEndpoint` 无显式超时 | `R:129-140` 的构造只设 `bridgeEndpoint` / `throwExceptionOnFailure` / `ssl` / `enabledProtocols` / `sslContextParameters` / `nativeTransport`，无 `requestTimeout`。**分清两者**：`connectTimeout` 有默认 10000 ms，所以**建连**是有界的；但 `requestTimeout` 在 `camel-netty-http-3.4.2` 的组件元数据里**无默认值**（即 `int` 取 0），而 `NettyHttpClientInitializerFactory:102` 的 `ReadTimeoutHandler` 只在 `getRequestTimeout() > 0` 时才装——因此**响应等待完全无界，那个超时处理器从未被装入过管道**。BACEN 侧连上却不回包时，请求会一直悬挂 |
 | 无证书到期监控 | 全仓唯一的 `checkValidity()` 在 `X509IssuerSerialKeySelector:47`，属**验签时**的有效期检查（即缺陷 5 的作用点），不是到期前的主动监控/告警 |
 | 配置只在启动时读取 | `R:156` 的 `ssmClient.getParametersByPath(...)` 由 `configure()`（Camel `RouteBuilder` 启动时执行一次）驱动，无刷新与重载路径 |
+| 无指标 / 追踪 / 告警 | 全仓零 `Micrometer` / `MeterRegistry` / `OpenTelemetry` / `X-Ray` / `putMetricData`，两个 README 里零 CloudWatch 告警配置（唯一的 SNS 提及是开头讲「互补架构」的段落，不是告警） |
+| HSM 客户端与应用同容器 | `proxy/cloudhsm/proxy/src/main/docker/Dockerfile:4-9` 在 `FROM amazoncorretto:11` 的同一镜像里 `yum install` 三个 CloudHSM rpm，第 22-23 行再把 `wrapper_script.sh` 与 `application.jar` 拷进去 |
 
 **本机无法验证**（硬约束，非遗漏）：多 HSM 故障转移需 ≥2 HSM 集群；`cavium` 模块需 x86_64 rpm 与 `rpm` 工具（复核机为 aarch64 且无 root）；S3/Firehose/LGPD 与可观测性各项属部署期配置，需实账号。
 

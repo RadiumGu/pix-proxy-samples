@@ -445,7 +445,25 @@ notBefore=Jul  5 2020   notAfter=Jul  3 2030
 
 **取证**：新增 `WellKnownTestCertificatesTest`（3 个方法，core 测试 11 → 14），含**阴性对照** `doesNotFlagAnUnrelatedCertificate`——若守卫对无关证书也报警，它在真实环境里就会被当噪音忽略，所以这条对照和阳性断言一样重要。
 
-### 7.6 复核确认的一处**设计取舍**，不是缺陷
+### 7.6 部署步骤审计：一条缺失的 IAM 权限、一个参数类型陷阱、一条从未指向任何地方的链接（均已修）
+
+逐条把两个 README 的部署步骤与代码实际读取/调用的东西对账。**先说没问题的部分**：12 个 `/pix/proxy/cloudhsm/*` 参数名与 `Param` 枚举**逐一对上**，KMS 侧 9 个参数与 `MtlsPrivateKey` secret 也都有创建步骤，`CloudHSMSecret` 的 JSON 键名（`HSM_USER` / `HSM_PASSWORD`）与 `PixCloudHSMProxyRouteBuilder:171-172` 读取的一致。三处问题：
+
+**① `cloudhsmv2:DescribeClusters` 不在 IAM 清单里（会卡在启动前）**
+
+`wrapper_script.sh:33` 在容器启动时执行 `aws cloudhsmv2 describe-clusters` 来发现 ACTIVE HSM 的 IP。这是一条 **IAM** 权限，而 README 原清单里与 CloudHSM 相关的那一条指向的是[安全组配置](https://docs.aws.amazon.com/cloudhsm/latest/userguide/configure-sg.html)——那是网络可达性，不是 IAM。缺这条权限时容器**在 JVM 启动之前就退出**。已加进 `README-CloudHSM.md` 的权限清单并写明它与安全组那条的区别。
+
+**② 参数建成 `SecureString` 会让启动失败，而文档从未说过要用 `String`**
+
+两处 `getParametersByPath` 都没设 `withDecryption`。SecureString 参数在不解密时返回的是密文，密文随后被喂进 `CertificateFactory` → 启动失败，且报错完全不提「参数类型」。而「凡是与证书/密钥沾边的都用 SecureString」是很多组织的硬性规范。**已改为无条件 `withDecryption(true)`**（对普通 `String` 参数该标志被忽略，所以两种类型都能用），并在两个 README 注明：真用 SecureString 时任务角色还需要该参数 KMS 键的 `kms:Decrypt`。
+
+**③ `README-KMS.md:31` 的链接是字面量 `xxx`**
+
+原文「To learn how to generate a CSR …, see [here](xxx)」——`xxx` 就是链接地址本身，从来没指向任何地方（`git show upstream/master` 确认上游同样如此，非本 fork 引入）。已替换为可核实的去处：本示例签名用的就是 `aws-samples/aws-kms-jce`，它的 `kms-jce-util` 模块里有 `CsrGenerator.generate(keyPair, csrInfo, kmsSigningAlgorithm)`（以及配套的 `SelfSignedCrtGenerator`）。顺带补一条权限精度：生成 CSR 需要构造 `KeyPair`，走的是 `KmsRSAKeyFactory.getKeyPair(kmsClient, keyId)` → 需要 **`kms:GetPublicKey`**，属**部署准备期**权限；而运行期的代理只调 `KmsRSAKeyFactory.getPrivateKey(keyId)`，读源码确认它只是构造一个引用、**不联系 KMS**，所以运行期只需 `kms:Sign`。这一点已写进 README，免得有人按「签名」二字给出过宽的权限。
+
+**一处查了但不成立的怀疑**：曾怀疑 KMS 侧 IAM 清单漏了 `kms:GetPublicKey`。读 `aws-kms-jce` 源码后否决——本项目只调 `getPrivateKey`，而 `KmsRSAKeyFactory:46-48` 的实现是 `new KmsRSAPrivateKey(keyId)`，没有任何 KMS 调用。原清单在运行期语义上是准确的。
+
+### 7.7 复核确认的一处**设计取舍**，不是缺陷
 
 第 1 节说缺陷 5 的症状是「每笔交易变 500」。读代码确认：修复后**500 依然存在**——`XmlSigner.verify()` 对证书有效期问题抛 `CertificateValidityException`（RuntimeException），而 `VerifyResponseProcessor:27` 只在 `verify()` 返回 `false` 时设 500，异常则直接冒泡成 Camel 错误。所以这个修复改变的是**可诊断性**（日志明确说"证书轮换问题，不是签名不匹配"）而**不是** HTTP 结果。文档的表述容易被读成"修了就不 500 了"，实际不是；真正要停掉 500 需要业务决策（过期证书是否拒绝交易），属第 5 节「必须由合规裁定」那一类。
 

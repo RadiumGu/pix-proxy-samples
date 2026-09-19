@@ -549,6 +549,13 @@ NAoejbjou87yzYUTY8nRnw==
 
 - Read the secret (AWS Secrets Manager).
 - Read the parameters (AWS Systems Manager Parameter Store).
+- **Describe the CloudHSM cluster (`cloudhsmv2:DescribeClusters`).** `wrapper_script.sh` calls
+  `aws cloudhsmv2 describe-clusters` at container start to discover the ACTIVE HSM IPs. This is an
+  **IAM** permission and is separate from the security-group rule below — without it the container
+  exits before the JVM is ever launched.
+- If any parameter above is created as a **SecureString**, also allow `kms:Decrypt` on that
+  parameter's KMS key. The application requests decryption unconditionally, which is ignored for
+  plain `String` parameters.
 - Put data (log) into deliver streams (Amazon Kinesis Data Firehose).
 - [Connect](https://docs.aws.amazon.com/cloudhsm/latest/userguide/configure-sg.html) to the AWS CloudHSM cluster.
 

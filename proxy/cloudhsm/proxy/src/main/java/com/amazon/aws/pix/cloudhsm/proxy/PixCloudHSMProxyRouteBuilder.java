@@ -153,7 +153,15 @@ public class PixCloudHSMProxyRouteBuilder extends EndpointRouteBuilder {
         parameters = new HashMap<>();
         String nextToken = null;
         do {
-            GetParametersByPathResponse response = ssmClient.getParametersByPath(GetParametersByPathRequest.builder().nextToken(nextToken).path(Param.PATH).recursive(true).build());
+            GetParametersByPathResponse response = ssmClient.getParametersByPath(GetParametersByPathRequest.builder()
+                    .nextToken(nextToken).path(Param.PATH).recursive(true)
+                    // withDecryption is required for SecureString parameters and ignored for
+                    // plain String ones. Without it, a SecureString parameter returns ciphertext,
+                    // which then reaches CertificateFactory and fails startup with an error that
+                    // says nothing about the parameter type. Many organisations mandate
+                    // SecureString for anything certificate-adjacent, so accept both. NOTE: using
+                    // SecureString also needs kms:Decrypt on the parameter key in the task role.
+                    .withDecryption(true).build());
             parameters.putAll(response.parameters().stream().collect(Collectors.toMap(Parameter::name, Parameter::value)));
             nextToken = response.nextToken();
         } while (nextToken != null);

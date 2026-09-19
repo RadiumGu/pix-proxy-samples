@@ -128,7 +128,12 @@ public class Config {
         parameters = new HashMap<>();
         String nextToken = null;
         do {
-            GetParametersByPathResponse response = ssmClient.getParametersByPath(GetParametersByPathRequest.builder().nextToken(nextToken).path(Param.PATH).recursive(true).build());
+            GetParametersByPathResponse response = ssmClient.getParametersByPath(GetParametersByPathRequest.builder()
+                    .nextToken(nextToken).path(Param.PATH).recursive(true)
+                    // See the matching comment in PixCloudHSMProxyRouteBuilder: required for
+                    // SecureString parameters, ignored for String ones. Needs kms:Decrypt on the
+                    // parameter key when SecureString is actually used.
+                    .withDecryption(true).build());
             parameters.putAll(response.parameters().stream().collect(Collectors.toMap(Parameter::name, Parameter::value)));
             nextToken = response.nextToken();
         } while (nextToken != null);

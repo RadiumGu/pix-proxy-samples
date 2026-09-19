@@ -28,7 +28,7 @@ The idea of the Proxy is to be a direct and mandatory path for every transaction
 
 Unlike [AWS CloudHSM architecture](https://aws.amazon.com/blogs/industries/supporting-digital-signature-and-message-transmissions-for-brazilian-instant-payment-system-with-aws-cloudhsm/), in which we use ELB to balance SPI and DICT messages, here [private APIs were used](https://docs.aws.amazon.com/apigateway/latest/developerguide/apigateway-private-apis.html), via AWS API Gateway, to distinguish between the 2 types of messages.
 
-It is worth mentioning that to use AWS KMS, to sign documents with the requirements required by PIX, it is necessary to generate a Certificate Signing Request (CSR) and, subsequently, obtain a valid digital certificate. To learn how to generate a CSR for asymmetric keys managed by AWS KMS, see [here](xxx).
+It is worth mentioning that to use AWS KMS, to sign documents with the requirements required by PIX, it is necessary to generate a Certificate Signing Request (CSR) and, subsequently, obtain a valid digital certificate. To learn how to generate a CSR for asymmetric keys managed by AWS KMS, use the `kms-jce-util` module of the same [aws-kms-jce](https://github.com/aws-samples/aws-kms-jce) project this sample already depends on for signing: `software.amazon.awssdk.services.kms.jce.util.csr.CsrGenerator.generate(keyPair, csrInfo, kmsSigningAlgorithm)`, with `SelfSignedCrtGenerator` alongside it for a self-signed certificate. (Upstream left this link as the literal placeholder `xxx`, so it never pointed anywhere.) Note that building the `KeyPair` for a CSR calls `KmsRSAKeyFactory.getKeyPair(kmsClient, keyId)`, which needs **`kms:GetPublicKey`** — a setup-time permission, distinct from the `kms:Sign` the running proxy needs.
 
 Optionally, the Financial Institution can view the transactions that this solution processes using [Amazon QuickSight](https://aws.amazon.com/quicksight/?nc1=h_ls). QuickSight's serverless architecture allows you to provide insights to everyone in your organization, and you can share interactive and sophisticated dashboards with all your users, allowing them to do detailed searches and explore data to answer questions and gain relevant insights.
 
@@ -311,7 +311,13 @@ environment variables:
 4. You also need configure the following [permissions](https://docs.aws.amazon.com/AmazonECS/latest/developerguide/task-iam-roles.html) to:
 - Read the secret (AWS Secrets Manager).
 - Read the parameters (AWS Systems Manager Parameter Store).
-- Sign documents (AWS KMS).
+- Sign documents (AWS KMS) — `kms:Sign` only. The running proxy never calls `kms:GetPublicKey`:
+  it builds the signing key with `KmsRSAKeyFactory.getPrivateKey(keyId)`, which constructs a
+  reference without contacting KMS. `kms:GetPublicKey` is needed only when generating the CSR
+  (see above).
+- If any parameter above is created as a **SecureString**, also allow `kms:Decrypt` on that
+  parameter's KMS key. The application requests decryption unconditionally, which is ignored for
+  plain `String` parameters.
 - Put data (log) into deliver streams (Amazon Kinesis Data Firehose).
 
 ### AWS API Gateway

@@ -25,6 +25,10 @@ import org.json.JSONObject;
 import software.amazon.awssdk.http.urlconnection.UrlConnectionHttpClient;
 import software.amazon.awssdk.regions.Region;
 import software.amazon.awssdk.services.firehose.FirehoseClient;
+import software.amazon.awssdk.services.firehose.model.PutRecordBatchRequest;
+import software.amazon.awssdk.services.firehose.model.PutRecordBatchResponse;
+import software.amazon.awssdk.services.firehose.model.Record;
+import software.amazon.awssdk.core.SdkBytes;
 import software.amazon.awssdk.services.secretsmanager.SecretsManagerClient;
 import software.amazon.awssdk.services.secretsmanager.model.GetSecretValueResponse;
 import software.amazon.awssdk.services.ssm.SsmClient;
@@ -110,6 +114,55 @@ public class PixCloudHSMProxyRouteBuilder extends EndpointRouteBuilder {
             new com.amazon.aws.pix.core.audit.AuditSpool(java.nio.file.Paths.get(
                     System.getProperty("pix.audit.spool.dir", "/work")));
 
+    /**
+     * Queue depth for off-path audit delivery. Bounded on purpose: an unbounded queue would turn a
+     * Firehose outage into heap exhaustion, trading a lost audit record for a total Pix outage.
+     * Overflow spills to {@link #auditSpool} rather than blocking the caller or dropping silently.
+     */
+    private static final int AUDIT_QUEUE_CAPACITY =
+            Integer.getInteger("pix.audit.queue.capacity", 10_000);
+
+    /** One writer per delivery stream; the DICT and SPI routes must not share a queue. */
+    private final Map<String, com.amazon.aws.pix.core.audit.AsyncAuditWriter> auditWriters =
+            new HashMap<>();
+
+    /**
+     * Builds the off-path batch writer for one delivery stream.
+     *
+     * <p>Uses {@code PutRecordBatch} rather than one {@code PutRecord} per transaction: up to 500
+     * records per call, which is what lets a single writer thread keep pace with a proxy that is
+     * signing continuously. Firehose reports per-record failures <em>inside</em> a 200 response, so
+     * {@code failedPutCount} is checked explicitly — treating HTTP 200 as success would lose exactly
+     * the records that were rejected, which is the silent-loss shape this work exists to remove.
+     */
+    private com.amazon.aws.pix.core.audit.AsyncAuditWriter auditWriterFor(final String streamName) {
+        return auditWriters.computeIfAbsent(streamName, stream -> {
+            final com.amazon.aws.pix.core.audit.AsyncAuditWriter writer =
+                    new com.amazon.aws.pix.core.audit.AsyncAuditWriter(
+                            AUDIT_QUEUE_CAPACITY,
+                            records -> {
+                                final PutRecordBatchResponse response =
+                                        firehoseClient.putRecordBatch(PutRecordBatchRequest.builder()
+                                                .deliveryStreamName(stream)
+                                                .records(records.stream()
+                                                        .map(r -> Record.builder()
+                                                                .data(SdkBytes.fromUtf8String(r))
+                                                                .build())
+                                                        .collect(Collectors.toList()))
+                                                .build());
+                                if (response.failedPutCount() != null
+                                        && response.failedPutCount() > 0) {
+                                    throw new IllegalStateException("Firehose rejected "
+                                            + response.failedPutCount() + " of " + records.size()
+                                            + " audit records inside a 200 response");
+                                }
+                            },
+                            auditSpool::spool);
+            writer.start();
+            return writer;
+        });
+    }
+
     /** Registry name of the custom initializer; referenced explicitly by bcbEndpoint(). */
     private static final String CLIENT_INITIALIZER_FACTORY = "nettyHttpClientInitializerFactory";
 
@@ -184,7 +237,7 @@ public class PixCloudHSMProxyRouteBuilder extends EndpointRouteBuilder {
                 // after the response has been returned to the caller, so the audit write is off
                 // the caller's latency path as a side benefit.
                 .onCompletion()
-                    .process(new LogRequestResponseProcessor(firehoseClient, streamName, auditSpool))
+                    .process(new LogRequestResponseProcessor(streamName, auditWriterFor(streamName), auditSpool))
                 .end()
                 // Must precede convertToString(). A compressed request body that reaches the
                 // string conversion is destroyed irreversibly, and the route would then sign the

@@ -35,6 +35,7 @@ import java.util.concurrent.atomic.AtomicLong;
  * <p>This class is free of AWS SDK and Camel types so it can be unit-tested in {@code proxy/core},
  * one of the only two modules whose tests execute in CI.
  */
+@lombok.extern.slf4j.Slf4j
 public class AuditSpool {
 
     /** Default ceiling. Small enough not to threaten a container's disk, large enough to bridge a sink blip. */
@@ -98,6 +99,12 @@ public class AuditSpool {
             final long existing = Files.exists(spoolFile) ? Files.size(spoolFile) : 0L;
             if (existing + line.length > maxBytes) {
                 dropped.incrementAndGet();
+                // The record is now genuinely lost - not delivered and not spooled. Previously this
+                // returned false in silence, so the single worst audit outcome was the quietest one
+                // in the logs. It carries a stable alarm token for that reason.
+                log.error("{} audit record LOST: the spool is full ({} bytes, cap {}) so the record "
+                                + "was neither delivered nor persisted. Ship and truncate the spool.",
+                        AuditAlarmTokens.SPOOL_WRITE_FAILED, existing, maxBytes);
                 return false;
             }
             Files.write(spoolFile, line,
@@ -106,6 +113,9 @@ public class AuditSpool {
             return true;
         } catch (IOException | RuntimeException e) {
             dropped.incrementAndGet();
+            log.error("{} audit record LOST: writing to the spool at {} failed, so the record was "
+                    + "neither delivered nor persisted.", AuditAlarmTokens.SPOOL_WRITE_FAILED,
+                    spoolFile, e);
             return false;
         }
     }

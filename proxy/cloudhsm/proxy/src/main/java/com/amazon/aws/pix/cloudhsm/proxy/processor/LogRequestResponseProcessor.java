@@ -1,16 +1,14 @@
 package com.amazon.aws.pix.cloudhsm.proxy.processor;
 
 import com.amazon.aws.pix.core.audit.AuditLog;
+import com.amazon.aws.pix.core.audit.AsyncAuditWriter;
+import com.amazon.aws.pix.core.audit.AuditAlarmTokens;
 import com.amazon.aws.pix.core.audit.AuditSpool;
 import com.amazon.aws.pix.core.util.PixConstants;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.apache.camel.Exchange;
 import org.apache.camel.Processor;
-import software.amazon.awssdk.core.SdkBytes;
-import software.amazon.awssdk.services.firehose.FirehoseClient;
-import software.amazon.awssdk.services.firehose.model.PutRecordRequest;
-import software.amazon.awssdk.services.firehose.model.PutRecordResponse;
 
 import java.util.Map;
 import java.util.stream.Collectors;
@@ -21,9 +19,18 @@ import static com.amazon.aws.pix.cloudhsm.proxy.processor.CaptureRequestProcesso
 @RequiredArgsConstructor
 public class LogRequestResponseProcessor implements Processor {
 
-    private final FirehoseClient firehoseClient;
     private final String streamName;
-    /** Durable fallback for records Firehose refused; see {@link AuditSpool}. */
+    /**
+     * Off-path delivery. The Firehose call happens on a background thread in batches, so neither
+     * its latency nor its failures land on the exchange that serves the caller.
+     *
+     * <p>The audit write must never fail the transaction: failing an exchange for a message BACEN
+     * may already have accepted is "downstream thinks it failed, upstream already settled", the
+     * worst inconsistency for a payment proxy (upstream issue #18). Handing the record to a queue
+     * that neither blocks nor throws is a stronger guarantee of that than a try/catch was.
+     */
+    private final AsyncAuditWriter auditWriter;
+    /** Durable fallback, used when the queue is full or delivery fails; see {@link AuditSpool}. */
     private final AuditSpool auditSpool;
 
     @Override
@@ -36,7 +43,8 @@ public class LogRequestResponseProcessor implements Processor {
         // failure, for instance. There is genuinely nothing to audit, but staying silent would
         // make a lost record look like a message that was never sent, so say so explicitly.
         if (auditLog == null) {
-            log.error("NO AUDIT RECORD EXISTS for an exchange on stream {} - it failed before the "
+            log.error(AuditAlarmTokens.NO_RECORD + " NO AUDIT RECORD EXISTS for an exchange on "
+                    + "stream {} - it failed before the "
                     + "request was captured. Nothing was sent to the BCB. Alarm on this line.",
                     streamName, exchange.getException());
             return;
@@ -61,37 +69,15 @@ public class LogRequestResponseProcessor implements Processor {
 
         final String auditJson = auditLog.toJson();
 
-        PutRecordRequest putRecordRequest = PutRecordRequest.builder()
-                .deliveryStreamName(streamName)
-                .record(builder -> builder.data(SdkBytes.fromUtf8String(auditJson)))
-                .build();
-
-        // The audit write must not fail the transaction. Letting it throw would fail an exchange
-        // for a message BACEN may have already accepted - "downstream thinks it failed, upstream
-        // already settled", the worst inconsistency for a payment proxy. See upstream issue #18.
-        //
-        // Swallowing the failure traded a correctness problem for a compliance one - a lost audit
-        // record. Item 1 below is DONE (local spool), and the transport-failure gap is now closed
-        // too: this processor runs from an onCompletion block, so it executes even when the BCB leg
-        // aborts the exchange. Items 2 and 3 remain open and still need a decision:
-        //   1. DONE - durable fallback, see AuditSpool. Note its limit: a spool on a container
-        //      filesystem dies with the task, so mount a volume and ship the file.
-        //   2. STILL OPEN - alarm on AuditSpool.spooledCount() being non-zero, and on the Firehose
-        //      errorOutputPrefix. An unaudited transaction is a compliance event and nothing in
-        //      this repository watches for one.
-        //   3. STILL OPEN - move the write off the critical path (bounded queue + PutRecordBatch).
-        try {
-            PutRecordResponse putRecordResponse = firehoseClient.putRecord(putRecordRequest);
-            if (log.isDebugEnabled()) {
-                log.debug("audit record delivered, recordId={}", putRecordResponse.recordId());
-            }
-        } catch (Exception e) {
-            final boolean spooled = auditSpool.spool(auditJson);
-            log.error("AUDIT DELIVERY FAILED for stream {} - transaction was NOT failed. "
-                    + "This is a compliance event: alarm on this line. Record {} to the local "
-                    + "spool ({}). A spool on a container filesystem does NOT survive the task.",
-                    streamName, spooled ? "WAS written" : "COULD NOT be written",
-                    auditSpool.status(), e);
+        // Hand off and return. The Firehose call now happens on a background thread in batches, so
+        // neither its latency nor its failures sit on the path that serves the caller. A full queue
+        // spills to the durable spool rather than blocking or dropping - see AsyncAuditWriter.
+        if (!auditWriter.submit(auditJson)) {
+            log.error(AuditAlarmTokens.QUEUE_FULL + " " + AuditAlarmTokens.SPOOLED
+                    + " audit queue full for stream {} - the record went to the local spool "
+                    + "instead ({}). Delivery is not keeping up; alarm on this line. A spool on a "
+                    + "container filesystem does NOT survive the task.",
+                    streamName, auditSpool.status());
         }
     }
 

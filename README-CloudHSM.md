@@ -629,6 +629,89 @@ prefix: log/spi/year=!{timestamp:yyyy}/month=!{timestamp:MM}/day=!{timestamp:dd}
 errorOutputPrefix: error/spi/year=!{timestamp:yyyy}/month=!{timestamp:MM}/day=!{timestamp:dd}/hour=!{timestamp:HH}/!{firehose:error-output-type}
 ```
 
+### Alarms on unaudited transactions
+
+An unaudited Pix transaction is a compliance event, and until now nothing here watched for one. The
+`errorOutputPrefix` below is configured, so records Firehose cannot deliver are written to S3 — but
+a prefix that nobody looks at is not a control. These are the alarms that make the existing plumbing
+observable.
+
+**Alarm on the log tokens, not on the log wording.** The proxy emits stable tokens next to each
+human sentence, declared in `AuditAlarmTokens`. A metric filter that matched prose would silently
+stop firing the first time someone improved a message — and an alarm that has gone quiet reads
+exactly like "nothing is wrong". **Changing one of those strings breaks a deployed alarm; treat them
+as a published interface.**
+
+| Token | Means | Severity |
+|---|---|---|
+| `PIX_AUDIT_SPOOLED` | A record could not be delivered and went to the local spool | High — recoverable, but only if the spool is shipped |
+| `PIX_AUDIT_QUEUE_FULL` | Off-path delivery is not keeping up with traffic | High — sustained means records are spooling continuously |
+| `PIX_AUDIT_NO_RECORD` | An exchange produced no audit record at all | High — nothing was sent to BCB, but the gap is unexplained |
+| `PIX_AUDIT_SPOOL_WRITE_FAILED` | Neither delivered nor persisted | **Critical — the record is genuinely lost** |
+
+```typescript
+// One metric filter per token; treat PIX_AUDIT_SPOOL_WRITE_FAILED as page-worthy.
+const auditLost = new logs.MetricFilter(this, 'AuditRecordLost', {
+    logGroup: proxyLogGroup,
+    filterPattern: logs.FilterPattern.literal('"PIX_AUDIT_SPOOL_WRITE_FAILED"'),
+    metricNamespace: 'Pix/Audit',
+    metricName: 'AuditRecordLost',
+    metricValue: '1',
+    defaultValue: 0,          // REQUIRED: without it the metric has no datapoints while healthy,
+});                           // and the alarm sits in INSUFFICIENT_DATA rather than OK
+
+new cloudwatch.Alarm(this, 'AuditRecordLostAlarm', {
+    metric: auditLost.metric({period: cdk.Duration.minutes(1), statistic: 'Sum'}),
+    threshold: 0,
+    comparisonOperator: cloudwatch.ComparisonOperator.GREATER_THAN_THRESHOLD,
+    evaluationPeriods: 1,     // a single lost audit record is already reportable
+    treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
+});
+```
+
+**Also alarm on the Firehose side**, because the tokens above cannot see a failure that happens after
+the proxy has handed the record over:
+
+```typescript
+// Records Firehose accepted but could not deliver - these land under errorOutputPrefix.
+new cloudwatch.Alarm(this, 'AuditDeliveryFailedAlarm', {
+    metric: new cloudwatch.Metric({
+        namespace: 'AWS/Firehose',
+        metricName: 'DeliveryToS3.Success',
+        dimensionsMap: {DeliveryStreamName: dictAuditStream.deliveryStreamName!},
+        period: cdk.Duration.minutes(5),
+        statistic: 'Average',
+    }),
+    threshold: 1,             // Average < 1 means some puts are failing
+    comparisonOperator: cloudwatch.ComparisonOperator.LESS_THAN_THRESHOLD,
+    evaluationPeriods: 1,
+    treatMissingData: cloudwatch.TreatMissingData.BREACHING,   // no data = not delivering
+});
+
+// Freshness catches a stream that is silently stalled rather than erroring.
+new cloudwatch.Alarm(this, 'AuditDataFreshnessAlarm', {
+    metric: new cloudwatch.Metric({
+        namespace: 'AWS/Firehose',
+        metricName: 'DeliveryToS3.DataFreshness',
+        dimensionsMap: {DeliveryStreamName: dictAuditStream.deliveryStreamName!},
+        period: cdk.Duration.minutes(5),
+        statistic: 'Maximum',
+    }),
+    threshold: 900,          // reconcile with the buffering hint actually configured
+    comparisonOperator: cloudwatch.ComparisonOperator.GREATER_THAN_THRESHOLD,
+    evaluationPeriods: 2,
+});
+```
+
+Note on `treatMissingData`: the two Firehose alarms use **BREACHING** on purpose. A delivery stream
+that has stopped receiving anything publishes no datapoints, so `NOT_BREACHING` would leave a totally
+dead audit pipeline sitting in `OK`. That is the failure mode most worth catching and the easiest to
+configure wrongly.
+
+Not yet done, and deliberately not claimed: none of this is wired in CDK in this repository, because
+there is no CDK app here to wire it into — the infrastructure is documented rather than deployed. What
+the code now guarantees is that every one of these conditions emits a stable, greppable token.
+
 ### AWS Systems Manager Parameter Store
 
 1. [Create](https://docs.aws.amazon.com/systems-manager/latest/userguide/sysman-paramstore-su-create.html) a parameter `/pix/proxy/cloudhsm/CloudHSMClusterId` and value:

@@ -10,9 +10,17 @@
 
 ## 0. CI 实测结果（2026-09-19，供直接引用）
 
-**当前状态：`master` 上 5 个 job 全绿** —— [run 35458232223](https://github.com/RadiumGu/pix-proxy-samples/actions/runs/35458232223)（提交 `50e61bc`）。自 `13349dc` 修好唯一长期失败的 `kms + simulator` job 起（[首次全绿 run 35456018649](https://github.com/RadiumGu/pix-proxy-samples/actions/runs/35456018649)，原因与修法见本节末尾），**连续 9 次推送全部 5/5 success**。
+**当前状态（2026-09-20）：`master` 上 CloudHSM-only CI 的 7 个 job 全绿。** 工作流已改为只维护 CloudHSM 路径——`kms` 不再参与 CI（历史保留、不受支持），下表里那个 `kms + simulator - compile` job **已不存在**，保留下文记录只为说明当初那个红叉的来龙去脉，**不要当成当前状态读**。
 
-`proxy/core` 的测试数在本轮独立复核中从 **5 增至 14**（新增 `XmlSignerSecureValidationTest` 4 个、`XmlSignerExpiredCertificateTest` 2 个、`WellKnownTestCertificatesTest` 3 个，见第 7 节），7 个 reactor 模块全部编译通过。
+当前 7 个 job：`core` · `CloudHSM simulator - compile` · `DICT v2 transparent-proxy contract test` · `cloudhsm - compile`（best effort）· `wrapper_script.sh - shellcheck` · `transport contract - production route options + KMS scope guard` · `audit schema`。
+
+2026-09-20 新增的 BCB DICT v2 传输契约测试与门禁，连同**未解决的 homologação gate 清单**，见 [`CLOUDHSM_BCB_V2_HANDOFF.md`](CLOUDHSM_BCB_V2_HANDOFF.md) 第 3.1 与第 7 节。要点复述一遍，因为它决定这份文档怎么被引用：**本地模拟器通过 ≠ BCB homologação 通过**；mTLS 私钥必须可导出、TLS 1.3、BCB cipher/证书链、SPI `MsgDefIdr` 与 XSD 版本**全部仍未验证**，均登记为 gate 而非已完成项。
+
+### 历史记录：首次全绿与 kms 红叉（2026-09-19）
+
+彼时状态：[run 35458232223](https://github.com/RadiumGu/pix-proxy-samples/actions/runs/35458232223)（提交 `50e61bc`）5 个 job 全绿；自 `13349dc` 修好唯一长期失败的 `kms + simulator` job 起（[首次全绿 run 35456018649](https://github.com/RadiumGu/pix-proxy-samples/actions/runs/35456018649)），连续 9 次推送 5/5 success。该 job 此后随 KMS 一并移出维护 CI。
+
+`proxy/core` 的测试数在 2026-09-19 的独立复核中从 **5 增至 14**（`XmlSignerSecureValidationTest` 4 个、`XmlSignerExpiredCertificateTest` 2 个、`WellKnownTestCertificatesTest` 3 个，见第 7 节），2026-09-20 再增至 **16**（`XmlSignerNotYetValidCertificateTest` 2 个，覆盖此前可达但无测试的证书轮换分支）。另有 `proxy/test` 的 28 个测试（11 个透明代理契约 + 17 个模拟器 v2 策略），由新增的 `dict-v2-contract` job 执行。7 个 reactor 模块全部编译通过。
 
 下表是最初那次 [Actions 运行](https://github.com/RadiumGu/pix-proxy-samples/actions/runs/35454878877)（推送 `fixes/p0-production-hardening` 触发），保留下来是因为它记录了 `kms` 红叉的原始现场：
 

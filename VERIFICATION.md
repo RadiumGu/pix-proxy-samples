@@ -1,5 +1,28 @@
 # 验证说明 / VERIFICATION
 
+> ## Read this first — what this document is, and who it is for
+>
+> **This is an audit trail, not user documentation.** It records how each claim this fork makes was
+> tested: what was reproduced, what was measured, what turned out to be wrong, and what was left
+> unfixed. It is written for someone **checking this work**, not for someone using the code.
+>
+> **If you just want to use or deploy this project, you are in the wrong file.** Go to
+> [`README-CloudHSM.md`](README-CloudHSM.md) — it has the architecture, the BCB / TLS / JDK /
+> CloudHSM version requirements, the deployment steps, and how to run the checks. For the list of
+> things that are still unproven, see section 7 of
+> [`CLOUDHSM_BCB_V2_HANDOFF.md`](CLOUDHSM_BCB_V2_HANDOFF.md).
+>
+> **Two warnings that apply however you use this repository:**
+> 1. The **CloudHSM path cannot be deployed as written** — the code targets Client SDK 3, while
+>    `hsm1.medium` reached end of support on 2026-03-31 and the only creatable instance type needs
+>    SDK 5.9.0+, which needs JDK 17+. See the ⚠️ section below.
+> 2. **Passing the test suite is not evidence of BCB homologação.** The local simulator is not BCB.
+>
+> **Language note:** most of this file is in Chinese, because it was written as a working record. An
+> English summary of the findings is in [Summary in English](#summary-in-english) at the end. The
+> rest of the repository's documentation is in English.
+
+
 本文档给**接收这份代码的人**：如何独立验证这个 fork 相对 AWS 官方示例做了哪些修复、以及**这些修复是真的有效**。
 
 - **上游仓库**：https://github.com/aws-samples/pix-proxy-samples
@@ -14,13 +37,19 @@
 
 当前 7 个 job：`core` · `CloudHSM simulator - compile` · `DICT v2 transparent-proxy contract test` · `cloudhsm - compile`（best effort）· `wrapper_script.sh - shellcheck` · `transport contract - production route options + KMS scope guard` · `audit schema`。
 
-2026-09-20 新增的 BCB DICT v2 传输契约测试与门禁，连同**未解决的 homologação gate 清单**，见 [`CLOUDHSM_BCB_V2_HANDOFF.md`](CLOUDHSM_BCB_V2_HANDOFF.md) 第 3.1 与第 7 节。要点复述一遍，因为它决定这份文档怎么被引用：**本地模拟器通过 ≠ BCB homologação 通过**；mTLS 私钥必须可导出、TLS 1.3、BCB cipher/证书链、SPI `MsgDefIdr` 与 XSD 版本**全部仍未验证**，均登记为 gate 而非已完成项。
+2026-09-20 新增的 BCB DICT v2 传输契约测试与门禁，连同**未解决的 homologação gate 清单**，见 [`CLOUDHSM_BCB_V2_HANDOFF.md`](CLOUDHSM_BCB_V2_HANDOFF.md) 第 3.1 与第 7 节。要点复述一遍，因为它决定这份文档怎么被引用：**本地模拟器通过 ≠ BCB homologação 通过**。
+
+**2026-09-20 更新——本节原先的说法已有两处被证据推翻，不要再按旧版引用：**
+
+- **TLS 与 cipher 不再是「未验证」。** 已取得 *Manual de Segurança do Pix* **v3.7**，§2 要求 「TLS versão **1.2 ou superior**」与最低套件 **ECDHE-RSA-AES-128-GCM-SHA256 (0xc02f)**。两条路由已改为 `enabledProtocols("TLSv1.2,TLSv1.3")`，并有 `TlsProtocolNegotiationTest` 覆盖。详见 HANDOFF **§7.2**。**仍未验证的是**：对 BCB 真实端点的握手（`dict.pi.rsfn.net.br` 无公网 A 记录，无法探测）、BCB 的 ICP-Brasil v10 证书链，以及**主机名校验缺失**——后者已重新归类为真实缺陷而非未知项。
+- **mTLS 私钥「必须可导出」的机制已实测。** 不再是推断：Netty 的 `PemPrivateKey.toPEM` 调用 `getEncoded()`，为 null 时抛 `does not support encoding`，且其唯一调用方就是 OPENSSL 路径。`MtlsNonExtractableKeyTest` 在 CI 中固化了这一事实，HANDOFF **§7.1** 给出四条补救路径与排序。
+- 仍然**未验证**且不要猜：SPI `MsgDefIdr` 与 XSD 版本（HANDOFF §7.3）。
 
 ### 历史记录：首次全绿与 kms 红叉（2026-09-19）
 
 彼时状态：[run 35458232223](https://github.com/RadiumGu/pix-proxy-samples/actions/runs/35458232223)（提交 `50e61bc`）5 个 job 全绿；自 `13349dc` 修好唯一长期失败的 `kms + simulator` job 起（[首次全绿 run 35456018649](https://github.com/RadiumGu/pix-proxy-samples/actions/runs/35456018649)），连续 9 次推送 5/5 success。该 job 此后随 KMS 一并移出维护 CI。
 
-`proxy/core` 的测试数在 2026-09-19 的独立复核中从 **5 增至 14**（`XmlSignerSecureValidationTest` 4 个、`XmlSignerExpiredCertificateTest` 2 个、`WellKnownTestCertificatesTest` 3 个，见第 7 节），2026-09-20 再增至 **16**（`XmlSignerNotYetValidCertificateTest` 2 个，覆盖此前可达但无测试的证书轮换分支）。另有 `proxy/test` 的 28 个测试（11 个透明代理契约 + 17 个模拟器 v2 策略），由新增的 `dict-v2-contract` job 执行。7 个 reactor 模块全部编译通过。
+`proxy/core` 的测试数在 2026-09-19 的独立复核中从 **5 增至 14**（`XmlSignerSecureValidationTest` 4 个、`XmlSignerExpiredCertificateTest` 2 个、`WellKnownTestCertificatesTest` 3 个，见第 7 节），2026-09-20 再增至 **16**（`XmlSignerNotYetValidCertificateTest` 2 个，覆盖此前可达但无测试的证书轮换分支）。另有 `proxy/test` 的 28 个测试（**已过时**：当前为 core 38 + proxy/test 38，见下方更新说明）（11 个透明代理契约 + 17 个模拟器 v2 策略），由新增的 `dict-v2-contract` job 执行。7 个 reactor 模块全部编译通过。
 
 下表是最初那次 [Actions 运行](https://github.com/RadiumGu/pix-proxy-samples/actions/runs/35454878877)（推送 `fixes/p0-production-hardening` 触发），保留下来是因为它记录了 `kms` 红叉的原始现场：
 

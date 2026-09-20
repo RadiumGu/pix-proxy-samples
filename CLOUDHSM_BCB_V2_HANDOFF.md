@@ -201,24 +201,95 @@ Everything in this section is **unverified by this repository** and must not be 
 working. Each one needs material from BCB onboarding/support plus a homologação run. They are
 listed as gates precisely so that "CI is green" is never mistaken for "BCB-ready".
 
-### 7.1 mTLS private key must be EXTRACTABLE — not solved, external gate
+### 7.1 mTLS private key must be EXTRACTABLE — mechanism now measured; remedies exist and are ranked
 
-The CloudHSM proxy cannot keep the mTLS private key inside the HSM. `PixCloudHSMProxyRouteBuilder`
-builds the client TLS context with Netty's `SslProvider.OPENSSL` and
-`keyManager(privateKey, certificates)`, which needs real private-key bytes, so the mTLS key has to
-be generated **without** `-nex` (extractable). Consequence, stated plainly: the deployment does
-**not** satisfy the strictest reading of "the private key is always under the institution's
-exclusive control".
+**Updated 2026-09-20.** This item previously called the gap "architectural, not a bug to patch
+here" and left the remedy vague. The mechanism is now measured and the remedies are ranked, so what
+remains is a decision rather than an unknown.
 
-What is *not* affected: the **signing** key. That one is non-extractable and stays in the HSM, and
-forging a transaction needs the signing key, not the mTLS key.
+#### The mechanism, measured rather than asserted
 
-This is an **architectural gap, not a bug to patch here**. Closing it needs one of: a Netty/Camel
-TLS path that accepts a `PrivateKey` handle backed by a JCE provider without exporting bytes; an
-mTLS terminator outside the JVM that can use an HSM key; or BCB confirmation that an extractable
-mTLS key is acceptable for the institution's risk posture. **Do not "fix" this by making the key
-non-extractable and assuming it works — it will fail at TLS handshake time.** Record the decision
-with whoever owns the institution's key policy.
+`PixCloudHSMProxyRouteBuilder` builds the BCB leg with `SslProvider.OPENSSL` and
+`keyManager(privateKey, certificates)` (lines 204–205), so the mTLS key must be generated
+**without** `-nex`, i.e. extractable.
+
+The README gives the reason as *"Cavium has JCE, but not JSSE"*. That is an architectural statement,
+it was true of Client SDK 3, and it is **not the mechanism that actually fails**. The difference
+matters because the two point at different remedies.
+
+Measured against `netty-handler-4.1.49.Final` bytecode: with the OPENSSL provider Netty hands the
+key to a native TLS library by PEM-encoding it. `PemPrivateKey.toPEM(ByteBufAllocator, boolean,
+PrivateKey)` calls `PrivateKey.getEncoded()`, throws `IllegalArgumentException` with the message
+`"<class> does not support encoding"` when it is `null`, and its **only** caller is
+`ReferenceCountedOpenSslContext` — the OPENSSL path itself. Per the JCA contract a key whose
+material cannot leave its device returns `null` there.
+
+Executable evidence: `MtlsNonExtractableKeyTest` (proxy/test, 3 tests, runs in CI) drives that exact
+call with a stub key whose `getEncoded()` is `null` and asserts the rejection, with an extractable
+software key as the control.
+
+So the blocker is a property of **this Netty API**, not of HSMs in general. That is what opens up
+remedies that do not require waiting for a JSSE integration.
+
+**What is *not* affected:** the **signing** key. It is non-extractable and stays in the HSM, and
+forging a transaction needs the signing key, not the mTLS key. The mTLS key only establishes the
+channel. This gap is therefore about **completeness of the compliance argument** — being able to say
+"no exceptions" rather than "one exception with compensating controls" — not about a high-severity
+hole. Do not let it displace higher-severity work.
+
+#### Remedies, ranked
+
+| | Approach | Requires SDK 3 → 5 migration? | Java code change | Main risk |
+|---|---|---|---|---|
+| **D** | mTLS terminated **outside the JVM**: a native sidecar (nginx / stunnel / Envoy / HAProxy) using the CloudHSM **OpenSSL Dynamic Engine**; the app talks loopback plaintext to it | **No** — the engine exists for SDK 3 too | **None** | whether the sidecar's *outbound* client-certificate directive accepts an engine-backed key |
+| **A** | Netty's own private-key offload, `OpenSslContextOption.PRIVATE_KEY_METHOD` | Recommended, not strictly required | Moderate | needs BoringSSL **and** a Netty upgrade — see below |
+| **B** | SDK 5 JCE + `keystoreType="CLOUDHSM"` KeyStore, `SslProvider.JDK` | **Yes, hard dependency** (and therefore JDK 17+) | Small | client-side authentication with this KeyStore is not documented by AWS |
+| **C** | Load the CloudHSM OpenSSL engine into `netty-tcnative` | — | Large | no public API; needs a custom tcnative build or JNI. **Do not attempt.** |
+
+**Path A costs more here than it appears, measured:** Netty's `PRIVATE_KEY_METHOD` is documented as
+BoringSSL-only, and this repository pins the `linux-x86_64-fedora` tcnative artifact, which is the
+OpenSSL variant. Beyond that swap, `OpenSslContextOption` **does not exist at all** in
+`netty-handler-4.1.49.Final` (it arrived in a later 4.1.x) — asserted by
+`MtlsNonExtractableKeyTest#openSslContextOptionIsAbsentSoThePrivateKeyCallbackIsNotAvailableHere`.
+So path A needs a Netty upgrade as well, on a Quarkus 1.7.0 / Camel-Quarkus 1.0.0 stack from 2020.
+
+**Why path D is worth validating first:** it is the only option that does not bind this gap to the
+SDK 5 migration (which 7.6 and section 5 treat as a separate project), it leaves the signing path
+untouched so the signature tests need no re-validation, and it uses an AWS-documented configuration
+rather than a Netty `@UnstableApi`. It would also incidentally address three items this repository
+tracks elsewhere: absent TLS hostname verification (7.2 item 3), the unset endpoint timeout, and the
+HSM client sharing a container with the application.
+
+**Path D's honest costs:** a loopback segment carries plaintext containing CPF, account and amount.
+It crosses no network boundary and stays inside one task's network namespace, but it is a new
+discussion point under a strict zero-trust review and needs recording in the risk register. It also
+adds a component to maintain (version, CVEs, configuration).
+
+#### What is still NOT established
+
+1. **The load-bearing unknown for path D.** AWS documents the engine with nginx as a **server**
+   (`ssl_certificate_key` + `ssl_engine cloudhsm`). This proxy needs nginx as a **client**
+   (`proxy_ssl_certificate_key`), and whether that directive also goes through the engine is not
+   covered by AWS documentation. `stunnel` in `client = yes` mode is the most direct alternative and
+   documents `engine` / `engineId` explicitly. **Validate this before committing to path D.**
+2. **A real CloudHSM key has not been tested.** The evidence above uses a stub. Confirming that a
+   real Cavium non-extractable key returns `null` from `getEncoded()` needs a cluster and the
+   x86_64 tcnative artifact, so it cannot run in CI or on this machine.
+3. **Proof that the handshake's private-key operation happens inside the HSM.** Whichever remedy is
+   chosen, the acceptance criterion is a CloudHSM **audit-log** entry for the handshake operation —
+   not merely a successful handshake. Build that check into the POC.
+4. **BCB's own position.** It remains valid to close this by having BCB accept an extractable mTLS
+   key for the institution's risk posture. Record that decision with whoever owns key policy.
+
+**Do not** "fix" this by making the key non-extractable and assuming it works — measured above, it
+fails at TLS context construction with `does not support encoding`.
+
+> Provenance: the four-path analysis and the SDK 5 / JSSE finding come from an external research
+> note supplied 2026-09-20. Its claims about this repository were re-verified here (README wording,
+> the two route lines, the tcnative classifier) and all three checked out; the Netty 4.1.49
+> `OpenSslContextOption` absence and the executable rejection test were added by this repository.
+> One claim in that note is **not** verified here: a 2026-03-01 compliance deadline, for which no
+> primary source was seen — do not cite it without one.
 
 ### 7.2 TLS protocol and cipher policy — requirement now known; real-endpoint proof still a gate
 

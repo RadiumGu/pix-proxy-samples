@@ -137,6 +137,60 @@ if grep -nE -- '-pl[^#]*\bkms\b|proxy/kms' .github/workflows/build.yml; then
 fi
 
 if [ "$rc" -eq 0 ]; then
-    echo "OK: transport contract options present, and KMS stays out of maintained CI"
+    
+# ---------------------------------------------------------------------------
+# Security-override pins.
+#
+# quarkus-bom 1.7.0.Final would otherwise supply Netty 4.1.49.Final
+# (CVE-2021-43797, header-injection request smuggling - acutely relevant to a
+# proxy) and jackson-databind 2.11.2 (CVE-2020-25649, XXE in a process that also
+# handles signed XML). The overrides only work because of two placement facts
+# that are easy to undo by accident, so both are pinned here.
+# ---------------------------------------------------------------------------
+PARENT_POM=proxy/pom.xml
+
+for pin in \
+    '<artifactId>netty-bom</artifactId>' \
+    '<artifactId>jackson-bom</artifactId>' \
+    '<netty.version>' \
+    '<jackson.version>' \
+    '<netty-tcnative.version>'; do
+  if ! grep -qF -- "$pin" "$PARENT_POM"; then
+    echo "ERROR: $PARENT_POM no longer pins $pin - the Netty/jackson CVE overrides are gone." >&2
+    exit 1
+  fi
+done
+
+# The imported security BOMs must precede quarkus-bom. For imported BOMs Maven
+# honours the FIRST declaration that manages an artifact, so moving netty-bom
+# below quarkus-bom silently restores the vulnerable versions while the build
+# still succeeds and the pom still "mentions" a pinned version.
+NETTY_BOM_LINE=$(grep -n '<artifactId>netty-bom</artifactId>' "$PARENT_POM" | head -1 | cut -d: -f1)
+JACKSON_BOM_LINE=$(grep -n '<artifactId>jackson-bom</artifactId>' "$PARENT_POM" | head -1 | cut -d: -f1)
+QUARKUS_BOM_LINE=$(grep -n '<artifactId>quarkus-bom</artifactId>' "$PARENT_POM" | head -1 | cut -d: -f1)
+
+if [ -z "$NETTY_BOM_LINE" ] || [ -z "$JACKSON_BOM_LINE" ] || [ -z "$QUARKUS_BOM_LINE" ]; then
+  echo "ERROR: could not locate the BOM imports in $PARENT_POM to check their order." >&2
+  exit 1
+fi
+if [ "$NETTY_BOM_LINE" -ge "$QUARKUS_BOM_LINE" ] || [ "$JACKSON_BOM_LINE" -ge "$QUARKUS_BOM_LINE" ]; then
+  echo "ERROR: netty-bom (line $NETTY_BOM_LINE) and jackson-bom (line $JACKSON_BOM_LINE) must both" >&2
+  echo "       appear BEFORE quarkus-bom (line $QUARKUS_BOM_LINE), or the CVE overrides do nothing." >&2
+  exit 1
+fi
+
+# A version declared in a module's own <dependencies> beats dependencyManagement
+# outright. netty-tcnative carried a hardcoded 2.0.31.Final here, which defeated
+# the parent's pin in complete silence - Netty moved to 4.1.118 while tcnative
+# stayed on 2.0.31, a mismatched JNI pair.
+if awk '/<artifactId>netty-tcnative<\/artifactId>/,/<\/dependency>/' \
+     proxy/cloudhsm/proxy/pom.xml | grep -q '<version>'; then
+  echo "ERROR: proxy/cloudhsm/proxy/pom.xml hardcodes a netty-tcnative version. A module-level" >&2
+  echo "       version overrides dependencyManagement, so this silently unpins tcnative from" >&2
+  echo "       Netty. Remove the <version> and let the parent supply it." >&2
+  exit 1
+fi
+
+echo "OK: transport contract options present, and KMS stays out of maintained CI"
 fi
 exit "$rc"

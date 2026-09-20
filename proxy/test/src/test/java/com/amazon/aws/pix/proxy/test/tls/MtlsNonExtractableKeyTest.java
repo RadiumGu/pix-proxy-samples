@@ -119,26 +119,71 @@ public class MtlsNonExtractableKeyTest {
     }
 
     /**
-     * Records why remedy "path A" (offloading the handshake's private-key operation to the HSM via
-     * Netty's own callback) is not a configuration change in this repository.
+     * Records where remedy "path A" (offloading the handshake's private-key operation to the HSM
+     * via Netty's own callback) actually stands, and this changed when the CVE overrides moved
+     * Netty from 4.1.49.Final to 4.1.118.Final.
      *
-     * <p>Netty exposes {@code OpenSslContextOption.PRIVATE_KEY_METHOD} for exactly this, and its
-     * javadoc restricts it to BoringSSL. Two things block it here: this repository pins the
-     * {@code linux-x86_64-fedora} tcnative artifact, which is the OpenSSL variant rather than
-     * BoringSSL; and, measured by this test, {@code OpenSslContextOption} does not exist at all in
-     * {@code netty-handler-4.1.49.Final} — it arrived in a later 4.1.x. So path A needs a Netty
-     * upgrade as well as a native-library swap, on a Quarkus 1.7.0 / Camel-Quarkus 1.0.0 stack from
-     * 2020. That cost belongs in the gate rather than being discovered during implementation.
+     * <p>On 4.1.49 this test asserted the opposite: {@code OpenSslContextOption} did not exist at
+     * all, so path A needed a Netty upgrade *and* a native-library swap. The upgrade has now
+     * happened as a side effect of fixing CVE-2021-43797, and this test failed loudly on the bump
+     * exactly as it was designed to. Measured on 4.1.118.Final, the API half of path A is present:
+     * {@code OpenSslContextOption.PRIVATE_KEY_METHOD} and {@code ASYNC_PRIVATE_KEY_METHOD} both
+     * exist, and {@code OpenSslPrivateKeyMethod} is the interface an HSM-backed signer would
+     * implement.
+     *
+     * <p>One blocker remains, and it is not an API one: {@code PRIVATE_KEY_METHOD} is restricted to
+     * BoringSSL, while this repository pins the {@code linux-x86_64-fedora} tcnative artifact,
+     * which is the dynamically-linked OpenSSL build. Path A is therefore now a native-library swap
+     * rather than a framework upgrade — materially cheaper than before, but still not a
+     * configuration change, and still not the recommended remedy. {@code OpenSsl.isBoringSSL()} is
+     * package-private so it cannot be asserted from here, and the native library cannot be loaded
+     * on an aarch64 build host anyway, so this test deliberately checks only the API surface.
      */
     @Test
-    public void openSslContextOptionIsAbsentSoThePrivateKeyCallbackIsNotAvailableHere() {
+    public void openSslPrivateKeyCallbackApiIsNowPresentAfterTheNettyUpgrade() throws Exception {
+        final ClassLoader cl = getClass().getClassLoader();
+
+        // initialize=false on purpose. Measured: initializing OpenSslPrivateKeyMethod throws
+        // NoClassDefFoundError for io.netty.internal.tcnative.SSLPrivateKeyMethod, because the
+        // callback API's own static setup reaches into netty-tcnative-classes. That is a real
+        // constraint on path A worth recording - the option is not usable from netty-handler
+        // alone - but it is not what this test is asserting, so the lookup avoids triggering it.
+        final Class<?> option =
+                Class.forName("io.netty.handler.ssl.OpenSslContextOption", false, cl);
+
+        Assert.assertEquals("PRIVATE_KEY_METHOD must be typed as the callback option",
+                "io.netty.handler.ssl.OpenSslPrivateKeyMethod",
+                genericOptionArgument(option.getField("PRIVATE_KEY_METHOD")));
+        Assert.assertNotNull("the async variant exists too",
+                option.getField("ASYNC_PRIVATE_KEY_METHOD"));
+
+        final Class<?> method =
+                Class.forName("io.netty.handler.ssl.OpenSslPrivateKeyMethod", false, cl);
+        Assert.assertTrue("an HSM signer would implement this interface", method.isInterface());
+    }
+
+    /** Reads the type argument of an {@code OpenSslContextOption<T>} field without initializing it. */
+    private static String genericOptionArgument(final java.lang.reflect.Field field) {
+        final java.lang.reflect.Type generic = field.getGenericType();
+        Assert.assertTrue("expected a parameterised option field",
+                generic instanceof java.lang.reflect.ParameterizedType);
+        return ((java.lang.reflect.ParameterizedType) generic).getActualTypeArguments()[0]
+                .getTypeName();
+    }
+
+    /**
+     * Negative control for the assertion above: a class that has never existed in Netty must still
+     * be reported as absent. Without this, {@code Class.forName} succeeding for any reason at all
+     * would look like evidence that the callback API had arrived.
+     */
+    @Test
+    public void theSameLookupStillReportsAGenuinelyAbsentClass() {
         try {
-            Class.forName("io.netty.handler.ssl.OpenSslContextOption");
-            Assert.fail("OpenSslContextOption now exists, so Netty was upgraded. Re-assess gate "
-                    + "7.1 path A: the private-key callback may now be reachable, though it still "
-                    + "requires the BoringSSL tcnative variant.");
+            Class.forName("io.netty.handler.ssl.OpenSslContextOptionThatDoesNotExist", false,
+                    getClass().getClassLoader());
+            Assert.fail("a fabricated Netty class must not resolve");
         } catch (ClassNotFoundException expected) {
-            // The documented state: the callback API is not on this classpath.
+            // Correct: the lookup above is capable of reporting absence.
         }
     }
 }

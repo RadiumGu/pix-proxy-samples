@@ -22,6 +22,34 @@
 
         <junit.version>4.13.1</junit.version>
         <commons-io.version>2.14.0</commons-io.version>
+
+        <!--
+          Security overrides. quarkus-bom 1.7.0.Final pulls Netty 4.1.49.Final and
+          jackson-databind 2.11.2, both of which carry advisories that matter here:
+
+            Netty 4.1.49 / CVE-2021-43797 - netty-codec-http does not reject a header
+            name containing a control character, so a downstream server can be made to
+            see a request boundary the upstream one did not. This proxy forwards
+            attacker-influenced headers to the BCB, which is exactly the shape of
+            deployment the advisory is about. Fixed in 4.1.71.Final.
+
+            jackson-databind 2.11.2 / CVE-2020-25649 - the XML factory does not disable
+            external entity resolution, an XXE exposure in a process that also handles
+            signed XML. Fixed in 2.11.4.
+
+          Both are pinned well past the fix so the later advisories in each line are
+          covered too, and netty-tcnative moves with Netty because the two are released
+          as a matched pair.
+
+          These BOM imports are deliberately declared BEFORE quarkus-bom: for imported
+          BOMs Maven takes the FIRST declaration that manages an artifact, so putting
+          them after quarkus-bom would leave the vulnerable versions in place and the
+          override would silently do nothing. Verified with `dependency:list`, not by
+          assuming - see README-CloudHSM.md.
+        -->
+        <netty.version>4.1.118.Final</netty.version>
+        <netty-tcnative.version>2.0.70.Final</netty-tcnative.version>
+        <jackson.version>2.15.4</jackson.version>
     </properties>
 
     <modules>
@@ -33,6 +61,41 @@
 
     <dependencyManagement>
         <dependencies>
+
+            <!--
+              MUST stay above quarkus-bom: the first imported BOM that manages an
+              artifact wins, so moving these down re-introduces the CVEs.
+            -->
+            <dependency>
+                <groupId>io.netty</groupId>
+                <artifactId>netty-bom</artifactId>
+                <version>${netty.version}</version>
+                <type>pom</type>
+                <scope>import</scope>
+            </dependency>
+
+            <!--
+              netty-tcnative has no BOM artifact, so it is managed directly. 2.0.70.Final
+              is the version Netty 4.1.118.Final itself declares in netty-parent, and the
+              two are released as a matched pair - moving Netty without moving tcnative is
+              how the OpenSSL provider ends up loading against the wrong JNI ABI. The
+              classifier stays linux-x86_64-fedora, which is the one that carries the
+              Amazon Linux-compatible native build.
+            -->
+            <dependency>
+                <groupId>io.netty</groupId>
+                <artifactId>netty-tcnative</artifactId>
+                <version>${netty-tcnative.version}</version>
+                <classifier>linux-x86_64-fedora</classifier>
+            </dependency>
+
+            <dependency>
+                <groupId>com.fasterxml.jackson</groupId>
+                <artifactId>jackson-bom</artifactId>
+                <version>${jackson.version}</version>
+                <type>pom</type>
+                <scope>import</scope>
+            </dependency>
 
             <dependency>
                 <groupId>com.amazon.aws</groupId>

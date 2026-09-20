@@ -99,7 +99,14 @@
         <dependency>
             <groupId>io.netty</groupId>
             <artifactId>netty-tcnative</artifactId>
-            <version>2.0.31.Final</version>
+            <!--
+              No version here on purpose. A version declared in a module's own
+              <dependencies> beats dependencyManagement outright, so hardcoding it
+              here silently defeated the parent's security override - measured: the
+              parent moved Netty to 4.1.118 while tcnative stayed on 2.0.31 until
+              this line was removed. The version now comes from the parent so the
+              pair cannot drift apart again.
+            -->
             <classifier>linux-x86_64-fedora</classifier>
         </dependency>
     </dependencies>

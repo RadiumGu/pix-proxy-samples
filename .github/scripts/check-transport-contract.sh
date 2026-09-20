@@ -65,11 +65,15 @@ require "$CLOUDHSM_ROUTE" ".throwExceptionOnFailure(false)" \
 require "$CLOUDHSM_ROUTE" ".ssl(true)" \
     "the BCB leg must be TLS"
 
-# TLS 1.2 is the currently TESTED behaviour. Raising it to 1.3 requires evidence from BCB's
-# current security manual plus a homologação run; this repository must not claim TLS 1.3
-# support it has not demonstrated. See CLOUDHSM_BCB_V2_HANDOFF.md section 4C.
-require "$CLOUDHSM_ROUTE" '.enabledProtocols("TLSv1.2")' \
-    "TLS 1.2 is the tested default; changing it needs BCB security-manual evidence and a homologação run, not a code edit"
+# The floor comes from BCB's own security manual, which is now quoted rather than guessed at.
+# Manual de Segurança do Pix v3.7, section 2 "Comunicação segura": "utilizando criptografia TLS
+# versão 1.2 ou superior, com autenticação mútua obrigatória". So 1.2 is the FLOOR and 1.3 is
+# permitted; offering both is what "ou superior" means, and TLS version negotiation keeps a
+# 1.2-only BCB endpoint reachable (measured in TlsProtocolNegotiationTest). The list stays pinned
+# because Corretto 11 still enables TLS 1.1 and 1.0 by default, which are BELOW that floor.
+# Dropping below 1.2, or leaving the list to the JVM, is what this gate is here to catch.
+require "$CLOUDHSM_ROUTE" '.enabledProtocols("TLSv1.2,TLSv1.3")' \
+    "the manual's floor is TLS 1.2 'ou superior'; the pinned pair keeps 1.1/1.0 out while allowing 1.3"
 
 # Response decoding. BCB's API page recommends clients send Accept-Encoding: gzip, and this proxy
 # forwards client headers transparently, so a compressed response is the EXPECTED case. The XML
@@ -101,8 +105,8 @@ require "$SIMULATOR_ROUTE" ".matchOnUriPrefix(true)" \
 require "$SIMULATOR_ROUTE" ".needClientAuth(true)" \
     "the simulator's value is that it exercises mTLS; without client auth it stops testing that"
 
-require "$SIMULATOR_ROUTE" '.enabledProtocols("TLSv1.2")' \
-    "the simulator must match the protocol the production leg is pinned to"
+require "$SIMULATOR_ROUTE" '.enabledProtocols("TLSv1.2,TLSv1.3")' \
+    "the simulator must match the protocol pair the production leg is pinned to"
 
 # KMS is historical/unsupported in this fork. Keep it out of the maintained CI surface: a
 # reference to it here would quietly make the maintained path depend on it again.

@@ -93,7 +93,10 @@ public class PixProxyTestRouteBuilder extends EndpointRouteBuilder {
         return nettyHttp(endpoint)
                 .matchOnUriPrefix(true)
                 .ssl(true)
-                .enabledProtocols("TLSv1.2")
+                // Mirrors the production floor: Manual de Seguranca do Pix v3.7 section 2
+                // mandates "TLS versao 1.2 ou superior". Offering both lets the simulator stand in
+                // for a BCB endpoint on either version.
+                .enabledProtocols("TLSv1.2,TLSv1.3")
                 .needClientAuth(true)
                 .sslContextParameters("#sslContextParameters")
                 .advanced().nativeTransport(true);

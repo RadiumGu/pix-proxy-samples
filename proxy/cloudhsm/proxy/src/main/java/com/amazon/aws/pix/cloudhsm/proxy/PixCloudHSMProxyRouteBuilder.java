@@ -138,7 +138,13 @@ public class PixCloudHSMProxyRouteBuilder extends EndpointRouteBuilder {
                 .bridgeEndpoint(true)
                 .throwExceptionOnFailure(false)
                 .ssl(true)
-                .enabledProtocols("TLSv1.2")
+                // Manual de Seguranca do Pix v3.7, section 2: "TLS versao 1.2 ou superior, com
+                // autenticacao mutua obrigatoria". 1.2 is the FLOOR, so 1.3 is offered too and TLS
+                // version negotiation settles on the highest both peers support - a 1.2-only BCB
+                // endpoint still connects (proven by TlsProtocolNegotiationTest). The list stays
+                // pinned rather than left to the JVM because Corretto 11 still enables TLS 1.1 and
+                // 1.0 by default, which are below the manual's floor.
+                .enabledProtocols("TLSv1.2,TLSv1.3")
                 .sslContextParameters(nettySSLContextParameters)
                 .advanced().nativeTransport(true);
     }

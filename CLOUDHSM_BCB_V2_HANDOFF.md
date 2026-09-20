@@ -200,7 +200,7 @@ Keep `README-CloudHSM.md` current and add a BCB homologação release checklist:
 Run only CloudHSM-relevant checks:
 
 ```bash
-mvn -B -f proxy/pom.xml -pl core test                       # 61 tests, CI run 35524166833
+mvn -B -f proxy/pom.xml -pl core test                       # 79 tests, CI run 35525201219
 mvn -B -f proxy/pom.xml -pl core,test test                 # + 38 in proxy/test, same date
 mvn -B -f proxy/pom.xml -pl core,test package -DskipTests
 mvn -B -f proxy/pom.xml -pl core,cloudhsm/cavium,cloudhsm/proxy package -DskipTests

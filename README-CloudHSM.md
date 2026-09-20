@@ -174,11 +174,11 @@ export JAVA_HOME=~/.local/opt/jdk11
 export PATH=$JAVA_HOME/bin:$PATH
 
 # 1. Signature, TLS, content-decoding, audit-spool, health-probe and revocation unit tests
-#    (core: 61 tests, read from CI run 35524166833 on 2026-09-20 - counts change, so verify)
+#    (core: 79 tests, read from CI run 35525201219 on 2026-09-20 - counts change, so verify)
 mvn -B -f proxy/pom.xml -pl core test
 
 # 2. Everything that executes, including the DICT v2 transport contract
-#    (core 61 + proxy/test 46 = 107, read from CI run 35524166833 on 2026-09-20)
+#    (core 79 + proxy/test 48 = 127, read from CI run 35525201219 on 2026-09-20)
 mvn -B -f proxy/pom.xml -pl core,test test
 
 # 3. Simulator build

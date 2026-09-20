@@ -3,6 +3,7 @@ package com.amazon.aws.pix.proxy.test;
 import com.amazon.aws.pix.core.util.KeyStoreUtil;
 import com.amazon.aws.pix.core.xml.Iso20022XmlSigner;
 import com.amazon.aws.pix.core.xml.XmlSigner;
+import com.amazon.aws.pix.proxy.test.dict.DictV2RequestPolicy;
 import lombok.RequiredArgsConstructor;
 import lombok.SneakyThrows;
 import org.apache.camel.Exchange;
@@ -210,10 +211,32 @@ public class PixProxyTestRouteBuilder extends EndpointRouteBuilder {
                 return;
             }
 
+            // DICT v2 request policy. This used to answer 200 for ANY path with no header checks,
+            // which meant the simulator could not detect the proxy dropping the path or the BCB
+            // headers - it would report success either way. The rules are this repository's
+            // simulator policy, NOT BCB behaviour; see DictV2RequestPolicy's javadoc and
+            // CLOUDHSM_BCB_V2_HANDOFF.md. Passing here is not evidence of BCB homologação.
+            DictV2RequestPolicy.Decision decision = DictV2RequestPolicy.decide(
+                    header(exchange, Exchange.HTTP_PATH),
+                    header(exchange, Exchange.HTTP_QUERY),
+                    exchange.getIn().getHeaders());
+
+            if (!decision.isSuccess()) {
+                exchange.getIn().setHeader("CamelHttpResponseCode", decision.status());
+                exchange.getIn().setHeader("Content-Type", "text/plain;charset=utf-8");
+                exchange.getIn().setBody("DICT v2 simulator: " + decision.reason());
+                return;
+            }
+
             exchange.getIn().setHeader("CamelHttpResponseCode", 200);
             exchange.getIn().setHeader("Content-Type", "application/xml;charset=utf-8");
 
             exchange.getIn().setBody(xmlSigner.sign(xmlResponse));
+        }
+
+        private String header(Exchange exchange, String name) {
+            Object value = exchange.getIn().getHeader(name);
+            return value == null ? null : value.toString();
         }
     }
 }

@@ -341,10 +341,39 @@ never background a process inside an SSM `AWS-RunShellScript` command: SSM buffe
 the command completes, a surviving child holds it open, and the command hangs to timeout returning
 **nothing**.
 
-**Still to confirm:** the same handshake driven by stunnel or nginx rather than `openssl s_client`
-(lower risk now that the key mechanism is a plain file path), and — the real acceptance criterion —
-a CloudHSM **audit-log** entry proving the handshake's private-key operation executed inside the HSM
-rather than merely that the handshake succeeded.
+**Correction to this section's own acceptance criterion — MEASURED.** Earlier text (and the external
+research note) said the real proof is a CloudHSM **audit-log entry** for the handshake's private-key
+operation. **That evidence does not exist and cannot be obtained.** CloudHSM's audit log records
+*management* commands only. Over the whole POC the log group `/aws/cloudhsm/<cluster>` contained:
+
+```
+CN_GENERATE_KEY_PAIR x1   CN_CREATE_USER x3   CN_LOGIN x29   CN_LOGOUT x7
+CN_INIT_TOKEN  CN_INIT_DONE  CN_GEN_PSWD_ENC_KEY  CN_GEN_KEY_ENC_KEY
+CN_BACKUP_BEGIN / CN_BACKUP_END   CN_APP_FINALIZE x19   CN_ENCRYPT_SESSION_V2 x53
+```
+
+There is **no signing opcode**, despite roughly ten private-key operations having been performed
+(two `dgst` signatures, a CSR, and three TLS handshakes). Data-plane crypto is not audit-logged —
+which is sensible for a high-volume HSM, but it means anyone told to "find the handshake in the audit
+log" will fail and may wrongly conclude the operation did not happen in the HSM.
+
+**Use this proof instead. It is stronger, and every part is queryable:**
+
+1. `local: true` — the key was **generated inside** the HSM rather than imported. Anchored in the
+   audit log by the single `CN_GENERATE_KEY_PAIR` entry, which *is* recorded.
+2. `never-extractable: true` and `always-sensitive: true` — the private key material has never
+   existed outside the HSM and cannot be made to.
+3. A signature produced through that key verifies against the public key (`Verified OK`), and a TLS
+   server verified the client chain — so a valid RSA private-key operation demonstrably occurred.
+4. Therefore the operation **must** have occurred inside the HSM, because the material needed to
+   perform it anywhere else has never existed.
+
+That is a deductive proof from key attributes plus provenance, not an appeal to an operation log, and
+it is what should be put in front of an auditor.
+
+**Still to confirm:** the same handshake driven by stunnel or nginx rather than `openssl s_client` —
+low risk now, since the key is referenced by an ordinary file path that any key-file directive
+accepts.
 
 #### Remedies, ranked
 

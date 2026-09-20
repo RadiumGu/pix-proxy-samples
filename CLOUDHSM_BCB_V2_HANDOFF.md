@@ -24,10 +24,16 @@ Facts relevant to this skeleton:
 2. BCB v2 bases shown by the official DICT page are:
    - Homologação: `dict-h.pi.rsfn.net.br:16522`, caller path begins `/api/v2/...`
    - Production: `dict.pi.rsfn.net.br:16422`, caller path begins `/api/v2/...`
-   - Non-payment key-check uses separate `dict-np.pi.rsfn.net.br:16432/api-np/v2/keys/check`.
+   - Non-payment key-check uses a separate host **and port** on both stages:
+     - Homologação: `dict-np-h.pi.rsfn.net.br:16532/api-np/v2/keys/check`
+     - Production: `dict-np.pi.rsfn.net.br:16432/api-np/v2/keys/check`
 3. BCB still documents mTLS, XML Digital Signature for DICT writes/changes, and mandatory response-signature validation. Query requests need not be signed.
 4. BCB v2 has query-driven operations (`Cursor`, `IncludeStatistics`, `Status`, `ModifiedAfter`, `Limit`, repeated query values). The CloudHSM proxy must preserve path/query/header/body transparently.
-5. The current BCB security-manual direct link referenced by the API page returned 404 during research. Do **not** guess TLS 1.3, cipher suites, SPI `MsgDefIdr`, or certificates. Get current materials from BCB onboarding/support and validate them in homologação.
+5. The security-manual link on the API page (`cedsfn/Manual_de_Seguranca_PIX.pdf`) still returns **404**, while its sibling manuals under `pix/Regulamento_Pix/` return 200 — so it is access-restricted, not missing. The document **was** obtained from the Internet Archive snapshot of that exact BCB URL (digest unchanged 2025-07-16 → 2026-06-03) and its transport requirements are now recorded in 7.2 and in README-CloudHSM.md. SPI `MsgDefIdr` and XSD versions remain unverified — see 7.3 — and must not be guessed.
+6. **Compression is expected, not exotic.** The API page recommends callers send `Accept-Encoding: gzip`; sending a compressed *request* is explicitly unsupported. Because the proxy forwards client headers transparently, BCB will answer compressed, and the body must be decoded before signature verification. Fixed 2026-09-20; see 3.2.
+7. **Connection reuse is recommended.** The API page states the mTLS handshake cost is high in latency terms, recommends an HTTP connection pool, and returns a `Keep-Alive` header carrying a `timeout`. This skeleton does not configure or document a pool — open item, not a defect of correctness.
+8. **DNS TTL must be respected.** The security manual states clients "devem sempre respeitar o TTL" of the DNS servers, warning that failing to do so can cause loss of access. This skeleton resolves configuration once at startup and has not been checked against that requirement — open item.
+9. **DICT API version moved on.** Released version is **2.12.1**; **2.13.0_rc1** is in progress. Its header-value regex changes (`PI-RequestingParticipant` → `^(?i)[a-z0-9]{8}`, `PI-PayerId` → `^([0-9]{11}|[A-Z0-9]{12}[0-9]{2})$` for **alphanumeric CNPJ**, account number `^[A-Z0-9]{1,20}$`) do **not** affect this proxy, which forwards bytes and never parses business content; `DictV2RequestPolicy` checks header *presence* only. Also of note: `getBucketState`/`listBucketStates` moved off `dict-ratelimit.pi.rsfn.net.br` in 2.6.0 and the old host now returns **HTTP 410**; MED 2.0 Funds Recovery, Fraud Markers and Event Notifications endpoints exist but are out of scope per section 1.
 
 ## 3. What is already fixed and verified
 
@@ -66,6 +72,41 @@ passed `-DskipTests`, so a test added to `proxy/test` or `proxy/cloudhsm` would 
 CI**. The `dict-v2-contract` job exists to close that. When adding a test here, confirm it actually
 executes by reading the run's test count — not by seeing the run go green.
 
+### 3.2 Added 2026-09-20 — compressed BCB responses no longer look like signature failures
+
+**A measured defect, not a hypothetical.** BCB's API page recommends callers send
+`Accept-Encoding: gzip`. The proxy forwards client headers transparently, so that reaches BCB and
+BCB answers compressed. The route then handed the body straight to `convertToString()` before
+verifying the signature.
+
+What that did, measured on this repository: the gzip magic `0x1f 0x8b` became `31, U+FFFD` — `0x8b`
+is not a valid stand-alone UTF-8 sequence, so it was replaced and the payload was destroyed
+**irreversibly**. `xmlSigner.verify()` then failed and the proxy answered **HTTP 500 with
+"signature invalid" for a response BCB had signed correctly**. The trigger was a caller following
+BCB's own documented recommendation.
+
+| Claim | Evidence | Note |
+|---|---|---|
+| gzip/deflate bodies decode to the exact signed bytes; unknown/stacked encodings and corrupt streams are refused; decoded size is bounded | `HttpContentDecoder` + `HttpContentDecoderTest` (16 tests, proxy/core) | one test pins the root cause, asserting the `String` round trip is lossy |
+| a gzip response reaches verification as the signed XML, `Content-Encoding` is stripped, the caller gets the whole body, an undecodable encoding is recorded rather than blamed on the signature | `DictV2CompressedResponseContractTest` (7 tests, proxy/test) | real Camel routes over loopback HTTP |
+| the production route decodes **before** `convertToString()` | `check-transport-contract.sh` compares line numbers | ordering is the fix; presence alone is not enough |
+
+A decode failure is recorded as `SIGNATURE_VALID_CONTENT_ENCODING_ERROR`, a fourth value for
+`pix-signature-valid` beside `true`, `false` and `certificate-validity-error`. The reasoning is the
+same as for the certificate case: a transport fault must not be filed as a cryptographic one. It is
+carried as an exchange property rather than thrown so the exchange survives to the Firehose audit
+write. No Glue schema change is needed — `response_signature_valid` is typed STRING.
+
+Negative control (a permanent test): `withoutDecodingTheBodyReachingVerificationIsDestroyed`
+asserts that with the decode step removed the body reaching verification is **not** the signed XML
+and does contain U+FFFD.
+
+**Seam worth knowing.** `DecodeResponseProcessor` lives in `proxy/cloudhsm/proxy`, which
+`proxy/test` deliberately does not depend on (that module needs the CloudHSM JCE rpm and is
+`continue-on-error` in CI). The contract test therefore exercises the same `HttpContentDecoder` call
+the processor makes, while the gate pins the production wiring. Test proves the mechanism, gate
+proves the wiring; neither alone suffices.
+
 ## 4. Required next work (CloudHSM only)
 
 ### A. Add CloudHSM v2 proxy contract tests — P0 — ✅ DONE 2026-09-20 (see 3.1)
@@ -86,14 +127,20 @@ Avoid requiring a real HSM for this test. Introduce an interface/factory seam ar
 
 `proxy/test` currently accepts every path on 8181/9191 and returns fixed success. Preserve it as a cryptographic smoke test, but add a v2 contract mode or explicit assertions for current `/api/v2` path/query/header cases. Keep the local simulator DNS (`test.pi.rsfn.net.br`) clearly separate from BCB homologação.
 
-### C. TLS / certificate controls — P1 — partially done; the rest is a homologação gate (see 7.2)
+### C. TLS / certificate controls — P1 — protocol/cipher policy DONE 2026-09-20 (see 7.2); chain + hostname verification still open
 
-Current CloudHSM code hardcodes `TLSv1.2`. Do not blindly replace it with TLS 1.3. Implement a narrowly scoped, default-preserving configuration only after confirming the exact Camel/Netty API and a BCB-approved protocol list:
+The protocol question is settled: the *Manual de Segurança do Pix* v3.7 requires "TLS versão 1.2 ou
+superior" with `ECDHE-RSA-AES-128-GCM-SHA256` (0xc02f) as the minimum suite, so both legs now pin
+`enabledProtocols("TLSv1.2,TLSv1.3")` and `TlsProtocolNegotiationTest` covers it. See 7.2 for the
+quotation, how the manual was retrieved, and what remains unproven.
 
-- default remains the currently tested TLS 1.2;
-- allow-list only BCB-approved protocols/ciphers;
-- document hostname validation and certificate-chain behavior;
-- add certificate expiry/rotation tests where feasible.
+Still open under this item:
+
+- hostname validation is absent and is a real defect, not an unknown (7.2 item 3);
+- BCB's ICP-Brasil v10 chain has never been validated against a real endpoint;
+- participant signing-certificate requirements (`padrão SPB`) need the *Manual de Segurança do SFN*;
+- certificate expiry/rotation now has tests (`XmlSignerExpiredCertificateTest`,
+  `XmlSignerNotYetValidCertificateTest`) but not against BCB-issued material.
 
 ### D. Documentation / release gate — P0 — see section 7
 
@@ -110,12 +157,18 @@ Keep `README-CloudHSM.md` current and add a BCB homologação release checklist:
 Run only CloudHSM-relevant checks:
 
 ```bash
-mvn -B -f proxy/pom.xml -pl core test
+mvn -B -f proxy/pom.xml -pl core test                       # 38 tests
+mvn -B -f proxy/pom.xml -pl core,test test                 # + 35 tests in proxy/test
 mvn -B -f proxy/pom.xml -pl core,test package -DskipTests
 mvn -B -f proxy/pom.xml -pl core,cloudhsm/cavium,cloudhsm/proxy package -DskipTests
 bash -n proxy/cloudhsm/proxy/src/main/docker/wrapper_script.sh
 shellcheck -S warning proxy/cloudhsm/proxy/src/main/docker/wrapper_script.sh
+bash .github/scripts/check-transport-contract.sh
 ```
+
+Only `core` and `test` execute tests; `simulator` and `cloudhsm` run with `-DskipTests`, so a test
+added to them would silently never run. After adding a test, confirm the **count** in the CI run
+rather than trusting a green tick.
 
 Do **not** run or fix `-pl kms`; KMS is intentionally out of scope.
 
@@ -167,20 +220,50 @@ mTLS key is acceptable for the institution's risk posture. **Do not "fix" this b
 non-extractable and assuming it works — it will fail at TLS handshake time.** Record the decision
 with whoever owns the institution's key policy.
 
-### 7.2 TLS protocol and cipher policy — pinned to what is tested, not to what BCB requires
+### 7.2 TLS protocol and cipher policy — requirement now known; real-endpoint proof still a gate
 
-The BCB leg is pinned to `TLSv1.2`, which is the **only** protocol this repository has exercised.
-The security-manual link on BCB's API page returned 404 during research (2026-09-20), so the
-current approved protocol and cipher-suite list is **unknown to this repository**.
+**Resolved 2026-09-20.** This item previously said the approved protocol and cipher list was
+"unknown to this repository". It is now known, quoted from the primary source.
 
-`.github/scripts/check-transport-contract.sh` now fails CI if `enabledProtocols("TLSv1.2")` is
-changed, so raising it to TLS 1.3 cannot happen through a one-word code edit. Before changing it:
-obtain BCB's current security manual, confirm the approved protocol/cipher list, then validate in
-homologação. **This repository makes no claim that TLS 1.3 works against BCB.**
+**Manual de Segurança do Pix, v3.7** (PDF created 2025-06-06), section 2 *"Comunicação segura"*:
 
-Also unverified: hostname validation is **not** enabled (mitigated only by explicitly trusting the
-BCB certificate, i.e. certificate pinning), and BCB's certificate chain has not been validated
-against a real endpoint.
+> "O participante deve se conectar às APIs disponíveis no Pix exclusivamente por meio do protocolo
+> HTTP versão 1.1 utilizando criptografia **TLS versão 1.2 ou superior**, com autenticação mútua
+> obrigatória no estabelecimento da conexão. Deve ser suportada, **no mínimo, a Cipher Suite
+> ECDHE-RSA-AES-128-GCM-SHA256 (0xc02f)**"
+
+Section 5.4.3 adds that the BC uses **ICP-Brasil chain v10** SSL certificates for connection
+authentication and encryption, and that participants sign with ICP-Brasil **padrão SPB**
+certificates whose specification lives in the *Manual de Segurança do SFN*.
+
+**Retrieval, stated because it bears on how much to trust this.** The URL the API page links to
+404s; the sibling manuals under `pix/Regulamento_Pix/` return 200, which was confirmed by
+enumerating that directory with the four retrievable manuals as a positive control that the
+enumeration method works. The PDF was then fetched from the Internet Archive snapshot of that exact
+BCB URL, digest unchanged across snapshots from 2025-07-16 to 2026-06-03. It is BCB's own file via
+an archive, not a third-party restatement. **Re-confirm the current version through BCB
+onboarding/support before a homologação run.**
+
+**What changed in the code.** Both legs now pin `enabledProtocols("TLSv1.2,TLSv1.3")` — 1.2 is the
+floor and `ou superior` permits 1.3. The list stays pinned rather than left to the JVM because
+Corretto 11 still enables TLS 1.1 and 1.0 by default, below the manual's floor; Corretto 17 does
+not. `TlsProtocolNegotiationTest` (proxy/core, 6 tests) proves a peer offering 1.2+1.3 still
+negotiates 1.2 against a 1.2-only server, that 0xc02f actually negotiates rather than merely being
+listed, and that the pin excludes 1.1/1.0. The mandatory suite is supported **and enabled by
+default** on both Corretto 11.0.32 and 17.0.20 — measured.
+
+**Still a gate, and not closed by any of the above:**
+
+1. **No proof against BCB's real endpoint.** `dict.pi.rsfn.net.br` has no public A record — RSFN is
+   a private network — so the handshake cannot be probed from outside it. Everything above is
+   loopback JSSE plus a document.
+2. **BCB's certificate chain is unvalidated.** ICP-Brasil v10 has not been exercised here.
+3. **Hostname verification is absent.** Mitigated only by explicitly trusting the BCB certificate
+   (i.e. pinning). This one does **not** depend on the manual — hostname verification is a general
+   TLS requirement — so it is a genuine open defect rather than an unknown, tracked here because
+   changing it affects the simulator fixture's certificate subject.
+4. **Signing-certificate requirements** (`padrão SPB`, per the *Manual de Segurança do SFN*) are not
+   verified; that manual has not been obtained.
 
 ### 7.3 SPI message definitions and XSD versions — not verified, do not guess
 

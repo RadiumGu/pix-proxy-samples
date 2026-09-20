@@ -86,6 +86,152 @@ This project contains source code and supporting files that includes the followi
 The main code of application uses several AWS resources, including AWS CLoudHSM and an AWS Fargate. The audit part of solution use other AWS resources, including [Amazon Kinesis Firehose](https://aws.amazon.com/kinesis/data-firehose/?nc1=h_ls), [Amazon Athena](https://aws.amazon.com/athena/?nc1=h_ls&whats-new-cards.sort-by=item.additionalFields.postDateTime&whats-new-cards.sort-order=desc), [Amazon S3](https://aws.amazon.com/s3/?nc1=h_ls) and [AWS Glue](https://docs.aws.amazon.com/glue/latest/dg/components-overview.html).
 
 
+## Version requirements: BCB Pix, TLS, JDK and CloudHSM
+
+Everything in this section is quoted from a primary source or measured. Where a requirement could
+not be verified it says so instead of guessing.
+
+### What BCB requires on the wire
+
+From the **Manual de Segurança do Pix, v3.7** (PDF created 2025-06-06), section 2
+*"Comunicação segura"*:
+
+> "O participante deve se conectar às APIs disponíveis no Pix exclusivamente por meio do protocolo
+> **HTTP versão 1.1** utilizando criptografia **TLS versão 1.2 ou superior**, com **autenticação
+> mútua obrigatória** no estabelecimento da conexão. Deve ser suportada, **no mínimo, a Cipher
+> Suite ECDHE-RSA-AES-128-GCM-SHA256 (0xc02f)**"
+
+| Requirement | Value | Where this repository stands |
+|---|---|---|
+| HTTP version | 1.1 | camel-netty-http speaks 1.1 |
+| TLS version | **1.2 or higher** (`ou superior`) | route pins `enabledProtocols("TLSv1.2,TLSv1.3")` |
+| Mutual authentication | mandatory | `needClientAuth` on the simulator; mTLS keystore from SSM in production |
+| Cipher suite | **at minimum** `ECDHE-RSA-AES-128-GCM-SHA256` (0xc02f) | supported **and enabled by default** on Corretto 11 and 17 — measured, not assumed |
+| Signature | XMLDSig; `<Signature>` at the XML root for DICT | `XmlSigner` / `Iso20022XmlSigner` |
+| Signing certificates | ICP-Brasil **padrão SPB** (spec in *Manual de Segurança do SFN*) | not verified here — homologação gate |
+| BC's connection certificates | ICP-Brasil **chain v10** SSL | not verified here — homologação gate |
+| DNS | clients "devem sempre respeitar o TTL" of the DNS servers | **not verified** — this skeleton reads config once at startup |
+
+Note that 1.2 is the **floor, not the ceiling**. `ou superior` permits TLS 1.3, which is why both
+are offered. The list is pinned rather than left to the JVM default because Corretto 11 still
+enables TLS 1.1 and 1.0, which are *below* that floor:
+
+```
+Corretto 11.0.32  default enabled: [TLSv1.3, TLSv1.2, TLSv1.1, TLSv1]   <- 1.1/1.0 must be excluded
+Corretto 17.0.20  default enabled: [TLSv1.3, TLSv1.2]
+```
+
+**How the manual was obtained.** The URL the DICT API page links to
+(`/content/estabilidadefinanceira/cedsfn/Manual_de_Seguranca_PIX.pdf`) returns **404**, while its
+sibling manuals under `pix/Regulamento_Pix/` return 200. The document here was retrieved from the
+Internet Archive snapshot of that exact BCB URL; its content digest is unchanged across snapshots
+from 2025-07-16 to 2026-06-03. It is BCB's own file reached through an archive. Confirm the current
+version through BCB onboarding/support before relying on it for a homologação run.
+
+### JDK versions
+
+TLS is **not** what constrains the JDK choice — both JDKs below satisfy the manual:
+
+| | 0xc02f supported / enabled by default | TLS 1.3 |
+|---|---|---|
+| Corretto 11.0.32 | yes / yes | yes |
+| Corretto 17.0.20 | yes / yes | yes |
+
+The mandatory cipher suite has been available since **JDK 8u161**, and TLS 1.3 since **JDK 11**
+(back-ported to 8u261). What actually forces a JDK upgrade is CloudHSM, below.
+
+### CloudHSM versions — this is the blocking constraint
+
+| Item | State |
+|---|---|
+| This code targets | Client **SDK 3** (`com.cavium.cfm2`, `PARTITION_1`, `key_mgmt_util`) |
+| `hsm1.medium` | **cannot be created since April 2025**; end of support **2026-03-31** (past) |
+| `hsm2m.medium` | the only creatable type; requires Client SDK **5.9.0+** |
+| SDK 5 JCE provider | supports **OpenJDK 17 / 21 / 25** only |
+
+So the CloudHSM path in this repository **cannot be deployed as written**, and the required
+migration to SDK 5 also forces JDK 17+. That is a consequence of CloudHSM lifecycle, not of any
+BCB requirement. On JDK 17 this repository's XMLDSig path additionally needs two `--add-exports`
+flags. See `CLOUDHSM_BCB_V2_HANDOFF.md` section 7.
+
+### Response compression
+
+BCB's API page recommends clients send `Accept-Encoding: gzip`. This proxy forwards client headers
+transparently, so a compressed response is the **expected** case. Because the XML signature covers
+the XML document and not the compressed octets, the route decodes the body *before* verifying it
+(`DecodeResponseProcessor`, then `convertToString()`, then `VerifyResponseProcessor`). Reversing
+that order does not merely fail — a gzip body converted to a `String` first has the magic byte
+`0x8b` replaced by U+FFFD and is destroyed irreversibly. Sending a compressed **request** is not
+supported by BCB at all.
+
+## How to verify all of this
+
+Only `core` and the `test` module run tests. `simulator` and `cloudhsm` build with `-DskipTests`,
+so a test placed in them would silently never run.
+
+```bash
+export JAVA_HOME=~/.local/opt/jdk11
+export PATH=$JAVA_HOME/bin:$PATH
+
+# 1. Signature, TLS and content-decoding unit tests (38 tests)
+mvn -B -f proxy/pom.xml -pl core test
+
+# 2. Everything that executes, including the DICT v2 transport contract (38 + 35 tests)
+mvn -B -f proxy/pom.xml -pl core,test test
+
+# 3. Simulator build
+mvn -B -f proxy/pom.xml -pl core,test package -DskipTests
+
+# 4. CloudHSM build (needs the CloudHSM JCE rpm installed locally)
+mvn -B -f proxy/pom.xml -pl core,cloudhsm/cavium,cloudhsm/proxy package -DskipTests
+
+# 5. Container entrypoint
+bash -n proxy/cloudhsm/proxy/src/main/docker/wrapper_script.sh
+shellcheck -S warning proxy/cloudhsm/proxy/src/main/docker/wrapper_script.sh
+
+# 6. Source-level transport contract + KMS scope guard
+bash .github/scripts/check-transport-contract.sh
+```
+
+### Which test covers which claim
+
+| Claim | Test / check |
+|---|---|
+| TLS 1.2 floor, 1.3 permitted, 1.2-only peer still reachable | `TlsProtocolNegotiationTest` (proxy/core) |
+| Mandatory suite 0xc02f negotiates, not merely listed | `TlsProtocolNegotiationTest` |
+| TLS 1.1/1.0 excluded by the pin | `TlsProtocolNegotiationTest` |
+| gzip/deflate decoding, refusals, bomb bound, root cause | `HttpContentDecoderTest` (proxy/core) |
+| gzip response reaches verification as the signed XML | `DictV2CompressedResponseContractTest` (proxy/test) |
+| path / query / repeated query / headers / body preserved | `DictV2TransparentProxyContractTest` (proxy/test) |
+| simulator request policy | `DictV2RequestPolicyTest` (proxy/test) |
+| production route still declares the pinned options, decode precedes verify | `check-transport-contract.sh` |
+
+### Negative controls
+
+Every contract assertion here has a paired negative control, because a test that only passes cannot
+show it would notice a regression. Two are permanent tests
+(`withoutBridgeEndpointThePathAndQueryAreLost`,
+`withoutDecodingTheBodyReachingVerificationIsDestroyed`); the rest are run by hand by breaking the
+thing and confirming the check goes red. To reproduce a gate control:
+
+```bash
+cp .github/scripts/check-transport-contract.sh /tmp/gate.bak   # restore from a FILE copy
+# then e.g. move DecodeResponseProcessor after convertToString in the route, and re-run:
+bash .github/scripts/check-transport-contract.sh               # must exit non-zero
+```
+
+Restore from a file copy and verify with `cmp`. Do **not** rely on `git checkout --` to undo a
+mutation: for an untracked file it silently does nothing, and for a tracked file it reverts to the
+last *commit* rather than to your uncommitted work. Both failure modes produced misleading
+"all green" runs while building this.
+
+### What none of this proves
+
+These checks run over **plain HTTP on loopback** with a stub signer, no HSM, no certificates and no
+AWS. They say nothing about TLS against BCB, about BCB's certificate chain, or about CloudHSM.
+`dict.pi.rsfn.net.br` has no public A record — RSFN is a private network — so the real endpoint
+cannot be probed from outside it. Passing these is **not** evidence of BCB homologação.
+
 ## Following is the proposed architecture
 
 The architecture presented here can be part of a more complete, [event-based solution](https://aws.amazon.com/en/event-driven-architecture/), which can cover the entire payment message transmission flow, from the banking core. For example, the complete solution of the Financial Institution (paying or receiving), could contain other complementary architectures such as **Authorization**, **Undo** (based on the [SAGA model](https://docs.aws.amazon.com/whitepapers/latest/microservices-on-aws/distributed-data-management.html)), **Effectiveness**, **Communication with on-premises** environment ([hybrid environment](https://aws.amazon.com/en/hybrid/)), etc., using other services such as [Amazon EventBridge](https://aws.amazon.com/en/eventbridge/), Amazon Simple Notification Service ([SNS](https://aws.amazon.com/en/sns/?whats-new-cards.sort-by=item.additionalFields.postDateTime&whats-new-cards.sort-order=desc)), Amazon Simple Queue Service ([SQS](https://aws.amazon.com/en/sqs/)), [AWS Step Functions](https://aws.amazon.com/en/step-functions/), [Amazon ElastiCache](https://aws.amazon.com/en/elasticache/), [Amazon DynamoDB](https://aws.amazon.com/en/dynamodb/).

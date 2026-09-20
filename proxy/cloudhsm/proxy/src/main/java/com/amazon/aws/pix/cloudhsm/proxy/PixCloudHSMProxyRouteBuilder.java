@@ -3,6 +3,7 @@ package com.amazon.aws.pix.cloudhsm.proxy;
 import com.amazon.aws.pix.cloudhsm.proxy.camel.netty.NettyHttpClientInitializerFactory;
 import com.amazon.aws.pix.cloudhsm.proxy.camel.netty.NettySSLContextParameters;
 import com.amazon.aws.pix.cloudhsm.proxy.processor.CaptureRequestProcessor;
+import com.amazon.aws.pix.cloudhsm.proxy.processor.DecodeResponseProcessor;
 import com.amazon.aws.pix.cloudhsm.proxy.processor.LogRequestResponseProcessor;
 import com.amazon.aws.pix.cloudhsm.proxy.processor.SignRequestProcessor;
 import com.amazon.aws.pix.cloudhsm.proxy.processor.VerifyResponseProcessor;
@@ -114,6 +115,9 @@ public class PixCloudHSMProxyRouteBuilder extends EndpointRouteBuilder {
                 .process(new SignRequestProcessor(xmlSigner))
                 .process(new CaptureRequestProcessor())
                 .to(bcbEndpoint(endpoint))
+                // Must precede convertToString(): a gzip body turned into a String is destroyed
+                // irreversibly, so decoding cannot happen after this point.
+                .process(new DecodeResponseProcessor())
                 .transform(body().convertToString())
                 .process(new VerifyResponseProcessor(xmlSigner))
                 .process(new LogRequestResponseProcessor(firehoseClient, streamName));

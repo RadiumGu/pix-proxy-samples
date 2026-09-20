@@ -8,9 +8,11 @@ import org.apache.camel.Processor;
 
 import java.util.Map;
 
+import static com.amazon.aws.pix.core.util.PixConstants.PIX_CONTENT_ENCODING_ERROR;
 import static com.amazon.aws.pix.core.util.PixConstants.PIX_HEADERS;
 import static com.amazon.aws.pix.core.util.PixConstants.PIX_HEADER_SIGNATURE_VALID;
 import static com.amazon.aws.pix.core.util.PixConstants.SIGNATURE_VALID_CERTIFICATE_ERROR;
+import static com.amazon.aws.pix.core.util.PixConstants.SIGNATURE_VALID_CONTENT_ENCODING_ERROR;
 
 @Slf4j
 @RequiredArgsConstructor
@@ -22,6 +24,15 @@ public class VerifyResponseProcessor implements Processor {
     public void process(Exchange exchange) throws Exception {
         Map<String, Object> headers = exchange.getIn().getHeaders();
         headers.putAll(exchange.getProperty(PIX_HEADERS, Map.class));
+
+        if (exchange.getProperty(PIX_CONTENT_ENCODING_ERROR) != null) {
+            // DecodeResponseProcessor could not undo the Content-Encoding, so the bytes below are
+            // not the XML BCB signed. Verifying them would report a signature mismatch for what is
+            // really a transport fault - exactly the conflation the certificate case below avoids.
+            headers.put(PIX_HEADER_SIGNATURE_VALID, SIGNATURE_VALID_CONTENT_ENCODING_ERROR);
+            headers.put("CamelHttpResponseCode", 500);
+            return;
+        }
 
         final String body = exchange.getIn().getBody(String.class);
         if (body != null && body.length() > 0) {

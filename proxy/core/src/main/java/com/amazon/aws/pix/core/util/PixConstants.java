@@ -32,4 +32,14 @@ public interface PixConstants {
      */
     String SIGNATURE_VALID_CONTENT_ENCODING_ERROR = "content-encoding-error";
 
+    /**
+     * Exchange property set when the response body could not be decoded.
+     * <p>
+     * It is a property rather than an exception so the exchange survives to the audit write; see
+     * {@code DecodeResponseProcessor}. {@code VerifyResponseProcessor} reads it and skips
+     * verification, because verifying a body we failed to decode can only produce a misleading
+     * signature verdict.
+     */
+    String PIX_CONTENT_ENCODING_ERROR = "pix-content-encoding-error";
+
 }

@@ -71,6 +71,28 @@ require "$CLOUDHSM_ROUTE" ".ssl(true)" \
 require "$CLOUDHSM_ROUTE" '.enabledProtocols("TLSv1.2")' \
     "TLS 1.2 is the tested default; changing it needs BCB security-manual evidence and a homologação run, not a code edit"
 
+# Response decoding. BCB's API page recommends clients send Accept-Encoding: gzip, and this proxy
+# forwards client headers transparently, so a compressed response is the EXPECTED case. The XML
+# signature is over the XML document, not over the compressed octets, so the body must be decoded
+# before verification. Ordering is the whole point and is why this is not just a presence check: a
+# gzip body converted to a String first has its magic byte 0x8b replaced by U+FFFD and is destroyed
+# irreversibly, after which verification can only report a bogus signature mismatch.
+require "$CLOUDHSM_ROUTE" "new DecodeResponseProcessor()" \
+    "the BCB response must be Content-Encoding-decoded before its XML signature is verified"
+
+decode_line=$(grep -n "new DecodeResponseProcessor()" "$CLOUDHSM_ROUTE" | head -1 | cut -d: -f1)
+convert_line=$(grep -n "\.transform(body()\.convertToString())" "$CLOUDHSM_ROUTE" | tail -1 | cut -d: -f1)
+verify_line=$(grep -n "new VerifyResponseProcessor(" "$CLOUDHSM_ROUTE" | head -1 | cut -d: -f1)
+if [ -n "$decode_line" ] && [ -n "$convert_line" ] && [ -n "$verify_line" ]; then
+    if [ "$decode_line" -ge "$convert_line" ] || [ "$decode_line" -ge "$verify_line" ]; then
+        fail "$CLOUDHSM_ROUTE" \
+            "DecodeResponseProcessor (line $decode_line) must come BEFORE the response convertToString (line $convert_line) and VerifyResponseProcessor (line $verify_line); decoding after the String conversion cannot work, the bytes are already destroyed"
+    fi
+else
+    fail "$CLOUDHSM_ROUTE" \
+        "could not locate the decode/convert/verify steps, so their ordering cannot be checked"
+fi
+
 echo "== CloudHSM local simulator: $SIMULATOR_ROUTE"
 
 require "$SIMULATOR_ROUTE" ".matchOnUriPrefix(true)" \

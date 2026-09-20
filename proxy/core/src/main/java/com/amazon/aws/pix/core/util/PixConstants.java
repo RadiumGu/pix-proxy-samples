@@ -17,4 +17,19 @@ public interface PixConstants {
      */
     String SIGNATURE_VALID_CERTIFICATE_ERROR = "certificate-validity-error";
 
+    /**
+     * Fourth value for {@link #PIX_HEADER_SIGNATURE_VALID}.
+     * <p>
+     * A body the proxy could not decode is not a bad signature either - it is a transport-encoding
+     * problem. BCB's API page recommends that clients send {@code Accept-Encoding: gzip}, and the
+     * proxy forwards client headers transparently, so a compressed response is the expected case
+     * rather than an exotic one. Recording it as {@code "false"} would put a compression fault in
+     * the signature-mismatch bucket, which is the same conflation
+     * {@link #SIGNATURE_VALID_CERTIFICATE_ERROR} exists to prevent.
+     * <p>
+     * Like that value, this one needs no Glue schema change: the column
+     * {@code response_signature_valid} is typed STRING.
+     */
+    String SIGNATURE_VALID_CONTENT_ENCODING_ERROR = "content-encoding-error";
+
 }

@@ -277,6 +277,53 @@ the intent. MEASURED: omitting the attribute is accepted without warning.
    under SDK 5 it must configure each component it uses.
 4. `cloudhsm-cli key generate-asymmetric-pair rsa` requires `--public-exponent`; it has no default.
 
+#### Path D's core mechanism is PROVEN on hardware — MEASURED 2026-09-20
+
+Tested on the same cluster, with the non-extractable key from above
+(`extractable=false`, `never-extractable=true`):
+
+```
+openssl engine -t -c cloudhsm
+  (cloudhsm) CloudHSM OpenSSL Engine   [RSA, EC]   [ available ]
+
+cloudhsm-cli key generate-file --encoding reference-pem --path hsmkey.pem \
+    --filter attr.label=pix-mtls-priv
+openssl dgst -engine cloudhsm -sha256 -sign hsmkey.pem -out sig.bin data.txt
+  Engine "cloudhsm" set.        -> sig.bin, 256 bytes (RSA-2048)
+
+openssl dgst -verify pub.pem -signature sig.bin -sha256 data.txt
+  Verified OK
+
+openssl req -new -engine cloudhsm -key hsmkey.pem -out client.csr -subj '...'
+  Certificate request self-signature verify OK
+```
+
+So the engine performs a genuine private-key operation on a key that cannot leave the HSM, and a
+client certificate can be issued for that key. That is the load-bearing capability path D needs.
+
+**The unknown this section flagged largely dissolves, and for an instructive reason.** The worry was
+that AWS documents the engine for a *server* directive (`ssl_certificate_key`) while this proxy needs
+a *client* one (`proxy_ssl_certificate_key`), and that the client directive might not route through
+the engine. Measured: there is no engine-specific key syntax to route at all. An `engine:name:id`
+reference **fails outright** —
+
+```
+openssl dgst -engine cloudhsm -keyform engine -sign pix-mtls-priv ...
+  Could not find private key from org.openssl.engine:cloudhsm:pix-mtls-priv
+  error:1300007D:engine routines:ENGINE_load_private_key:no load function
+```
+
+— because the CloudHSM engine implements **no `load_private_key` function**. The only mechanism is
+the `reference-pem` file, which is an ordinary file on disk that merely *looks* like a private key
+and contains no key material. Any directive that takes a key **file path** therefore accepts it, and
+server-side versus client-side stops being a meaningful distinction. This also means nginx's
+`ssl_certificate_key engine:...` syntax would not have worked either way.
+
+**Still to confirm:** a full mTLS handshake driven by stunnel/nginx in client mode, that the
+mandatory suite 0xc02f negotiates with this key, TLS 1.3 behaviour, and — the real acceptance
+criterion — a CloudHSM **audit-log** entry proving the handshake's private-key operation executed
+inside the HSM rather than merely that the handshake succeeded.
+
 #### Remedies, ranked
 
 | | Approach | Requires SDK 3 → 5 migration? | Java code change | Main risk |

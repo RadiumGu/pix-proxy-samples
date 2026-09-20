@@ -44,6 +44,7 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.stream.Collectors;
 
+@lombok.extern.slf4j.Slf4j
 @ApplicationScoped
 public class PixCloudHSMProxyRouteBuilder extends EndpointRouteBuilder {
 
@@ -124,8 +125,49 @@ public class PixCloudHSMProxyRouteBuilder extends EndpointRouteBuilder {
         configure(8080, xmlSigner, getParameter(Param.BcbDictEndpoint), getParameter(Param.DictAuditStream));
         configure(9090, iso20022XmlSigner, getParameter(Param.BcbSpiEndpoint), getParameter(Param.SpiAuditStream));
 
-        from(checkEndpoint()).transform(constant("OK"));
+        from(checkEndpoint())
+                // Was: .transform(constant("OK")) - which reported healthy unconditionally.
+                //
+                // That is worse than having no probe. A load balancer keeps routing Pix traffic to
+                // a container whose HSM session has died, so the container looks healthy exactly
+                // while every DICT write it receives fails signing. Weaker checks would not help:
+                // a CloudHSM PrivateKey is a handle, so a non-null key and an open TCP connection
+                // can both be true while the session behind them is gone. Signing a canary
+                // document is what tells a live session from a stale handle.
+                //
+                // 503 rather than 500: load balancers and orchestrators treat "I am deliberately
+                // unavailable" differently from "I crashed", and only the former reliably takes an
+                // instance out of rotation without being counted as an application error.
+                .process(exchange -> {
+                    final com.amazon.aws.pix.core.health.HsmHealthProbe.Result result =
+                            hsmHealthProbe.check();
+                    exchange.getMessage().setHeader(org.apache.camel.Exchange.HTTP_RESPONSE_CODE,
+                            result.isHealthy() ? 200 : 503);
+                    exchange.getMessage().setBody(result.isHealthy()
+                            ? "OK" : "UNHEALTHY: " + result.getDetail());
+                    if (!result.isHealthy()) {
+                        log.error("/check reporting UNHEALTHY - this container cannot sign: {}",
+                                result.getDetail());
+                    }
+                });
     }
+
+    /**
+     * Canary document for the health probe. Deliberately minimal and constant: the probe exists to
+     * exercise the HSM private key, not to test XML handling.
+     */
+    private static final String HEALTH_CANARY = "<healthcheck/>";
+
+    /**
+     * Probes whether this container can still sign, cached for a few seconds so that per-second
+     * health polls do not each cost an HSM private-key operation.
+     *
+     * <p>It signs with the DICT signer because that is the credential the proxy's primary duty
+     * depends on. A future refinement would probe both signers separately and report which one is
+     * broken; today a single verdict is what the endpoint can express.
+     */
+    private final com.amazon.aws.pix.core.health.HsmHealthProbe hsmHealthProbe =
+            new com.amazon.aws.pix.core.health.HsmHealthProbe(() -> xmlSigner.sign(HEALTH_CANARY));
 
     private void configure(int port, XmlSigner xmlSigner, String endpoint, String streamName) {
         from(proxyEndpoint(port))

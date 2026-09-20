@@ -243,6 +243,37 @@ if [ "$AUDIT_LINE" -ge "$SEND_LINE" ]; then
   exit 1
 fi
 
+# ---------------------------------------------------------------------------
+# /check must actually probe the HSM.
+#
+# It used to return the constant "OK", which is worse than having no probe: a load
+# balancer keeps routing Pix traffic to a container whose HSM session has died, so
+# the container reports healthy exactly while every DICT write it receives fails
+# signing. Reverting to a constant would be a one-line change that no test could
+# catch, because the endpoint would still answer 200.
+# ---------------------------------------------------------------------------
+# Comment lines are stripped first. The route legitimately DESCRIBES the old
+# behaviour in a comment explaining why it changed, and matching that text would fail
+# the build for documenting the fix - which is exactly what happened on the first
+# attempt at this check.
+CHECK_ROUTE_CODE=$(grep -vE '^[[:space:]]*(//|\*|/\*)' "$CLOUDHSM_ROUTE")
+
+if printf '%s' "$CHECK_ROUTE_CODE" | grep -q 'transform(constant("OK"))'; then
+  echo "ERROR: $CLOUDHSM_ROUTE reports /check healthy unconditionally again. A constant \"OK\"" >&2
+  echo "       keeps a container with a dead HSM session in the load balancer's rotation." >&2
+  echo "       See HsmHealthProbe and HsmHealthProbeTest." >&2
+  exit 1
+fi
+
+# Matches the CALL, not the type name. An earlier version grepped for
+# "HsmHealthProbe", which a renamed-but-unused "HsmHealthProbeGone" still satisfies as
+# a substring - the assertion passed while the probe was gone.
+if ! printf '%s' "$CHECK_ROUTE_CODE" | grep -q 'hsmHealthProbe\.check()'; then
+  echo "ERROR: $CLOUDHSM_ROUTE no longer calls hsmHealthProbe.check() on /check, so the endpoint" >&2
+  echo "       is not proving the container can still sign." >&2
+  exit 1
+fi
+
 echo "OK: transport contract options present, and KMS stays out of maintained CI"
 fi
 exit "$rc"

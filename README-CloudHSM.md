@@ -590,7 +590,8 @@ columns: [
     {name: 'response_status_code', type: glue.Schema.INTEGER},
     {name: 'response_signature_valid', type: glue.Schema.STRING},
     {name: 'response_header', type: glue.Schema.STRING},
-    {name: 'response_body', type: glue.Schema.STRING}
+    {name: 'response_body', type: glue.Schema.STRING},
+    {name: 'transport_failure', type: glue.Schema.STRING}
 ],
             
 partitionKeys: [

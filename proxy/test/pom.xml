@@ -70,6 +70,21 @@
             <artifactId>junit</artifactId>
             <scope>test</scope>
         </dependency>
+
+        <!--
+          Test scope only. Camel 3 ships each component as its own artifact, so "direct:" is not
+          on the classpath just because camel-core is - a route using it fails at startup with
+          "No endpoint could be found". The onCompletion audit test needs a trivial in-process
+          consumer so that the transport failure it provokes comes from the PRODUCER leg and
+          nothing else; netty-http would put a second network hop in front of the behaviour under
+          test. Version is managed by the camel-quarkus BOM in the parent pom. src/main gains
+          nothing from this.
+        -->
+        <dependency>
+            <groupId>org.apache.camel</groupId>
+            <artifactId>camel-direct</artifactId>
+            <scope>test</scope>
+        </dependency>
     </dependencies>
 
     <build>

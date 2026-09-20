@@ -129,6 +129,20 @@ public class PixCloudHSMProxyRouteBuilder extends EndpointRouteBuilder {
 
     private void configure(int port, XmlSigner xmlSigner, String endpoint, String streamName) {
         from(proxyEndpoint(port))
+                // The audit write lives here, not at the end of the route, and that placement is
+                // the whole point. A transport or TLS failure on the BCB leg - connection refused,
+                // handshake rejected, read timeout - aborts the exchange, and a final .process()
+                // step simply never executes, so the request that WAS signed and WAS sent left no
+                // record at all. Note that throwExceptionOnFailure(false) does not cover this: it
+                // suppresses HTTP error statuses, while these failures happen below HTTP.
+                //
+                // onCompletion runs on both success and failure, which makes "signed and sent,
+                // outcome unknown" an auditable state instead of an invisible one. It also runs
+                // after the response has been returned to the caller, so the audit write is off
+                // the caller's latency path as a side benefit.
+                .onCompletion()
+                    .process(new LogRequestResponseProcessor(firehoseClient, streamName, auditSpool))
+                .end()
                 .transform(body().convertToString())
                 .process(new SignRequestProcessor(xmlSigner))
                 .process(new CaptureRequestProcessor())
@@ -137,8 +151,7 @@ public class PixCloudHSMProxyRouteBuilder extends EndpointRouteBuilder {
                 // irreversibly, so decoding cannot happen after this point.
                 .process(new DecodeResponseProcessor())
                 .transform(body().convertToString())
-                .process(new VerifyResponseProcessor(xmlSigner))
-                .process(new LogRequestResponseProcessor(firehoseClient, streamName, auditSpool));
+                .process(new VerifyResponseProcessor(xmlSigner));
 
     }
 

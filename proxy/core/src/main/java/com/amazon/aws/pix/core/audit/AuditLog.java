@@ -51,6 +51,18 @@ public class AuditLog {
         put("response_body", value);
     }
 
+    /**
+     * Records that the BCB leg never produced a response - a connection failure, a TLS handshake
+     * failure, or a read timeout - rather than leaving the record indistinguishable from a
+     * successful exchange that happened to carry no status code.
+     *
+     * <p>A record carrying this field is evidence that the request was signed and sent but its
+     * outcome is unknown, which is exactly the state an operator has to reconcile by hand.
+     */
+    public void setTransportFailure(Object value) {
+        put("transport_failure", value);
+    }
+
     public String toJson() {
         return json.toString();
     }

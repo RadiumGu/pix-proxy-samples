@@ -210,6 +210,39 @@ if ! grep -qF 'setEndpointIdentificationAlgorithm("HTTPS")' "$CLIENT_FACTORY"; t
   exit 1
 fi
 
+# ---------------------------------------------------------------------------
+# The audit write must stay inside an onCompletion block.
+#
+# As a trailing .process() it is simply skipped when the BCB leg fails at the
+# transport layer - connection refused, handshake rejected, read timeout - so a
+# request that WAS signed and WAS sent leaves no record at all. Moving it back to
+# the end of the route would compile, pass every happy-path test, and silently
+# restore that gap, so the position is pinned by line number rather than by
+# presence. throwExceptionOnFailure(false) does not cover this: it suppresses HTTP
+# error statuses, which arrive as a well-formed response, while these failures
+# happen below HTTP. See OnCompletionAuditSurvivesTransportFailureTest, whose
+# negative control reproduces the loss.
+# ---------------------------------------------------------------------------
+if ! grep -q '\.onCompletion()' "$CLOUDHSM_ROUTE"; then
+  echo "ERROR: $CLOUDHSM_ROUTE no longer wraps the audit write in an onCompletion block, so a transport" >&2
+  echo "       failure on the BCB leg will lose the audit record entirely." >&2
+  exit 1
+fi
+
+AUDIT_LINE=$(grep -n 'new LogRequestResponseProcessor(' "$CLOUDHSM_ROUTE" | head -1 | cut -d: -f1)
+SEND_LINE=$(grep -n 'to(bcbEndpoint(' "$CLOUDHSM_ROUTE" | head -1 | cut -d: -f1)
+
+if [ -z "$AUDIT_LINE" ] || [ -z "$SEND_LINE" ]; then
+  echo "ERROR: could not locate the audit write and the BCB send in $CLOUDHSM_ROUTE to check their order." >&2
+  exit 1
+fi
+if [ "$AUDIT_LINE" -ge "$SEND_LINE" ]; then
+  echo "ERROR: the audit write (line $AUDIT_LINE) must be registered BEFORE the BCB send" >&2
+  echo "       (line $SEND_LINE), which is what the onCompletion form does. Sitting after the" >&2
+  echo "       send means it is skipped whenever the send fails at transport level." >&2
+  exit 1
+fi
+
 echo "OK: transport contract options present, and KMS stays out of maintained CI"
 fi
 exit "$rc"

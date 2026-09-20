@@ -4,6 +4,14 @@
   <img src="/images/proxy-kms-arch.png">
 </p>
 
+> ## ⚠️ Historical / unsupported path in this fork
+>
+> The KMS architecture under `proxy/kms` is retained only as **historical reference material** from the upstream sample. It is **not supported, updated, built, tested, or claimed compatible with current BCB Pix / DICT requirements** by this fork.
+>
+> In particular, it is outside the maintained CloudHSM teaching scope (XML signatures, mTLS, CloudHSM client/container integration, and transparent HTTP proxying). Do not use the KMS implementation, its Lambda deployment instructions, its endpoint examples, or its test results as a production or homologação baseline.
+>
+> For the maintained scope and BCB DICT v2 boundary, see [`README-CloudHSM.md`](README-CloudHSM.md) and [`VERIFICATION.md`](VERIFICATION.md).
+
 This project contains source code and supporting files that includes the following  folders:
 
 - `proxy/kms` - Proxy that uses AWS KMS.

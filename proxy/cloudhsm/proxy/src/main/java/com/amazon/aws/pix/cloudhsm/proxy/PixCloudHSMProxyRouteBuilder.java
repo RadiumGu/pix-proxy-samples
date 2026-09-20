@@ -172,8 +172,27 @@ public class PixCloudHSMProxyRouteBuilder extends EndpointRouteBuilder {
      */
     private static final long BCB_READ_TIMEOUT_MS = 30_000L;
 
+    /**
+     * Connection-pool bounds for the BCB leg. Operational values, not BCB protocol values.
+     *
+     * <p>{@code MIN_EVICTABLE_IDLE} is the one that bites: it must stay below the Keep-Alive timeout
+     * BCB advertises, or the pool will hand out a connection the peer has already closed.
+     */
+    private static final int BCB_POOL_MAX_ACTIVE =
+            Integer.getInteger("pix.bcb.pool.maxActive", 100);
+    private static final int BCB_POOL_MIN_IDLE =
+            Integer.getInteger("pix.bcb.pool.minIdle", 5);
+    private static final long BCB_POOL_MIN_EVICTABLE_IDLE_MS =
+            Long.getLong("pix.bcb.pool.minEvictableIdleMs", 20_000L);
+
     @Override
     public void configure() throws Exception {
+        // Manual de Seguranca do Pix section 2: clients "devem sempre respeitar o TTL" published by
+        // the DNS servers. The JVM does not honour a record's TTL at all - it applies its own fixed
+        // cache - and defaults to caching FOREVER when a security manager is installed, so a stale
+        // address can outlive a BCB endpoint move for the life of the process. Bound it explicitly.
+        log.info(com.amazon.aws.pix.core.net.DnsCachePolicy.apply());
+
         getContext().getRegistry().bind(CLIENT_INITIALIZER_FACTORY, new NettyHttpClientInitializerFactory());
 
         configure(8080, xmlSigner, getParameter(Param.BcbDictEndpoint), getParameter(Param.DictAuditStream));
@@ -284,8 +303,24 @@ public class PixCloudHSMProxyRouteBuilder extends EndpointRouteBuilder {
                 // bound is an operational safety limit, NOT a BCB protocol value - reconcile it
                 // with the Manual de Tempos do Pix before homologação.
                 .requestTimeout(BCB_READ_TIMEOUT_MS)
+                // The DICT API page states the mTLS handshake is expensive in latency terms and
+                // recommends an HTTP connection pool, and BCB returns Keep-Alive with a timeout.
+                // Reuse matters more here than for an ordinary client: every new connection is a
+                // full mutual-TLS handshake whose client-side private-key operation happens inside
+                // the HSM, so a non-reusing proxy pays an HSM round trip per request.
+                .keepAlive(true)
                 .advanced()
                 .nativeTransport(true)
+                // Pool options live under advanced() in camel-netty-http 3.4.2.
+                .producerPoolMaxActive(BCB_POOL_MAX_ACTIVE)
+                .producerPoolMinIdle(BCB_POOL_MIN_IDLE)
+                // Must stay BELOW the Keep-Alive timeout BCB advertises. If the pool holds an idle
+                // connection longer than the peer does, the peer closes it first and the next
+                // request goes into a half-closed socket - surfacing as sporadic, load-dependent
+                // failures that look like network flakiness rather than misconfiguration.
+                // Reconcile with the timeout in BCB's Keep-Alive response header before
+                // homologação: this is a conservative guess, NOT a BCB value.
+                .producerPoolMinEvictableIdle(BCB_POOL_MIN_EVICTABLE_IDLE_MS)
                 // MEASURED, and the reason this line exists: binding the factory into the registry
                 // is NOT enough. Camel does not autowire clientInitializerFactory - without this
                 // explicit reference it instantiates the STOCK HttpClientInitializerFactory, and

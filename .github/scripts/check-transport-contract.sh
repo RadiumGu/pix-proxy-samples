@@ -326,6 +326,32 @@ if [ "$REJECT_LINE" -ge "$CONVERT_LINE" ]; then
   exit 1
 fi
 
+# ---------------------------------------------------------------------------
+# Connection reuse and DNS TTL, both required by BCB documentation.
+#
+# The DICT API page recommends an HTTP connection pool because the mTLS handshake is
+# expensive - and here every handshake's client-side private-key operation runs inside
+# the HSM, so a non-reusing proxy pays an HSM round trip per request. The Manual de
+# Seguranca do Pix section 2 requires respecting DNS TTL; the JVM applies a fixed cache
+# instead of the record's TTL, and caches FOREVER when a security manager is installed.
+# ---------------------------------------------------------------------------
+for pin in 'keepAlive(true)' 'producerPoolMaxActive(' 'producerPoolMinEvictableIdle('; do
+  if ! printf '%s' "$CHECK_ROUTE_CODE" | grep -qF -- "$pin"; then
+    echo "ERROR: $CLOUDHSM_ROUTE no longer configures $pin, so the BCB leg stops reusing" >&2
+    echo "       connections and pays a full mutual-TLS handshake - including an HSM" >&2
+    echo "       private-key operation - on every request." >&2
+    exit 1
+  fi
+done
+
+if ! printf '%s' "$CHECK_ROUTE_CODE" | grep -q 'DnsCachePolicy\.apply()'; then
+  echo "ERROR: $CLOUDHSM_ROUTE no longer bounds the JVM DNS cache. The Manual requires respecting" >&2
+  echo "       DNS TTL, and the JVM default is to cache forever when a security manager is" >&2
+  echo "       installed - a stale address then outlives a BCB endpoint move for the whole" >&2
+  echo "       process lifetime." >&2
+  exit 1
+fi
+
 echo "OK: transport contract options present, and KMS stays out of maintained CI"
 fi
 exit "$rc"

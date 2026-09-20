@@ -319,10 +319,32 @@ and contains no key material. Any directive that takes a key **file path** there
 server-side versus client-side stops being a meaningful distinction. This also means nginx's
 `ssl_certificate_key engine:...` syntax would not have worked either way.
 
-**Still to confirm:** a full mTLS handshake driven by stunnel/nginx in client mode, that the
-mandatory suite 0xc02f negotiates with this key, TLS 1.3 behaviour, and — the real acceptance
-criterion — a CloudHSM **audit-log** entry proving the handshake's private-key operation executed
-inside the HSM rather than merely that the handshake succeeded.
+**Outbound mTLS with the non-extractable key WORKS — MEASURED.** Three handshakes against a local
+`openssl s_server -Verify 1` (OpenSSL **3.5.8**, where ENGINEs are deprecated — so the engine still
+functions on a modern OpenSSL):
+
+| Test | Client/server evidence | Verdict |
+|---|---|---|
+| mTLS, TLS 1.2 | server logged `depth=0 C=BR, O=pixpoc, CN=pix-client` and `1 server accepts that finished`; cipher `ECDHE-RSA-AES256-GCM-SHA384` | client authentication with the HSM key succeeded |
+| Mandatory suite | `Cipher is ECDHE-RSA-AES128-GCM-SHA256` on both sides, `1 server accepts that finished` | **0xc02f negotiates** with an HSM-backed key |
+| TLS 1.3 | `Protocol: TLSv1.3`, `Cipher is TLS_AES_256_GCM_SHA384`, `1 server accepts that finished` | TLS 1.3 works too |
+
+The server verifying the client chain is the proof that matters: the client demonstrated possession
+of a private key whose `extractable` attribute is `false`. `verify error:num=18 self-signed
+certificate` also appears, but that is the *client* objecting to the *server's* self-signed
+certificate in this fixture and has no bearing on client authentication.
+
+Two harness traps cost real time and are recorded so nobody repeats them. `openssl s_server` exits
+on **stdin EOF**, so backgrounding it with a closed stdin makes it print `ACCEPT` then `DONE` with
+`0 server accepts that finished` — which reads exactly like a handshake failure but is not one. And
+never background a process inside an SSM `AWS-RunShellScript` command: SSM buffers all output until
+the command completes, a surviving child holds it open, and the command hangs to timeout returning
+**nothing**.
+
+**Still to confirm:** the same handshake driven by stunnel or nginx rather than `openssl s_client`
+(lower risk now that the key mechanism is a plain file path), and — the real acceptance criterion —
+a CloudHSM **audit-log** entry proving the handshake's private-key operation executed inside the HSM
+rather than merely that the handshake succeeded.
 
 #### Remedies, ranked
 

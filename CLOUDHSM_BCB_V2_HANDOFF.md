@@ -371,9 +371,23 @@ log" will fail and may wrongly conclude the operation did not happen in the HSM.
 That is a deductive proof from key attributes plus provenance, not an appeal to an operation log, and
 it is what should be put in front of an auditor.
 
-**Still to confirm:** the same handshake driven by stunnel or nginx rather than `openssl s_client` —
-low risk now, since the key is referenced by an ordinary file path that any key-file directive
-accepts.
+**Still to confirm, and NOT attempted:**
+
+- The same handshake driven by stunnel or nginx rather than `openssl s_client`. Low risk now, since
+  the key is referenced by an ordinary file path that any key-file directive accepts, and
+  `openssl s_client` and stunnel share the same OpenSSL engine plumbing.
+- **Whether this repository's `XmlSigner` works against an SDK 5 keystore.** Not tested. It would
+  have needed the `pix-core` jar shipped onto the instance, and the POC cluster was torn down first
+  to stop it billing. What target 4 already establishes is the part that actually constrains the
+  design: an SDK 5 key is null-encoded, so the signing path must take the key as a `PrivateKey`
+  handle and never ask for its bytes — which `XmlSigner` already does, since it receives a
+  `PrivateKey` and a `KeyStore` rather than key material. The open question is narrower than it
+  looks: whether JSR-105 selects the CloudHSM provider for the `Signature` operation.
+
+**POC teardown, verified 2026-09-20.** `describe-clusters` returns 0 clusters; the EC2 instance is
+`terminated`; the security group is deleted; the throwaway cluster CA private key was shredded. One
+unrelated pre-existing *stopped* Cloud9 instance remains in the account and was deliberately left
+alone.
 
 #### Remedies, ranked
 

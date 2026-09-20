@@ -113,11 +113,27 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Syntax check
-        run: bash -n proxy/cloudhsm/proxy/src/main/docker/wrapper_script.sh
+        run: |
+          bash -n proxy/cloudhsm/proxy/src/main/docker/wrapper_script.sh
+          bash -n .github/scripts/check-transport-contract.sh
       - name: ShellCheck
         run: |
           sudo apt-get update && sudo apt-get install -y shellcheck
           shellcheck -S warning proxy/cloudhsm/proxy/src/main/docker/wrapper_script.sh
+          shellcheck -S warning .github/scripts/check-transport-contract.sh
+
+  transport-contract:
+    name: transport contract - production route options + KMS scope guard
+    runs-on: ubuntu-latest
+    # The production CloudHSM route cannot be started in CI (it needs CloudHSM, an HSM login and
+    # AWS), so its endpoint configuration is pinned by source assertion instead. This is the
+    # companion to the dict-v2-contract job: that one characterises what the options DO, this one
+    # keeps production declaring them. It also guards the CloudHSM-only scope by failing if KMS
+    # re-enters the maintained workflow.
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check transport contract options and scope
+        run: bash .github/scripts/check-transport-contract.sh
 
   audit-schema:
     name: audit schema - AuditLog keys vs documented Glue columns

@@ -114,7 +114,12 @@ jobs:
       - name: Fetch and install the SDK 3 JCE jar (external download - best effort)
         id: sdk3
         continue-on-error: true
-        run: mvn -B -f proxy/pom.xml -pl core,cloudhsm/cavium install -DskipTests
+        # The leading "." installs the aggregator pom com.amazon.aws:pix itself. Without it the
+        # next step fails with "Could not find artifact com.amazon.aws:pix:pom:1.0.0", because
+        # -pl cloudhsm/proxy resolves its parent from the local repository rather than from the
+        # reactor. That is invisible on a developer machine whose ~/.m2 already holds the parent
+        # from an earlier full build, and it is exactly what broke the first version of this job.
+        run: mvn -B -f proxy/pom.xml -pl .,core,cloudhsm/cavium install -DskipTests
       - name: Compile proxy/cloudhsm/proxy - THIS GATES
         if: steps.sdk3.outcome == 'success'
         run: mvn -B -f proxy/pom.xml -pl cloudhsm/proxy package -DskipTests

@@ -138,6 +138,21 @@ public class NettyHttpClientInitializerFactory extends ClientInitializerFactory 
             engine.setUseClientMode(true);
             SSLParameters sslParameters = engine.getSSLParameters();
             sslParameters.setServerNames(Arrays.asList(new SNIHostName(uri.getHost())));
+
+            // Verify that the server certificate actually belongs to the host we dialled.
+            //
+            // Without this, JSSE validates the chain but never compares the certificate's
+            // subject / SAN against the hostname, so any certificate the trust store accepts
+            // is accepted for ANY host. Setting SNI does not help: SNI tells the server which
+            // name we want, it does not check what the server sends back.
+            //
+            // The pinned trust anchor already limits the damage today, because only one exact
+            // leaf certificate is trusted. That mitigation disappears the moment the anchor
+            // becomes a CA - which is the direction revocation checking pushes it - and at
+            // that point every certificate that CA ever issued would be accepted for the BCB
+            // endpoint. "HTTPS" is the standard algorithm name and applies RFC 2818 matching.
+            sslParameters.setEndpointIdentificationAlgorithm("HTTPS");
+
             engine.setSSLParameters(sslParameters);
             if (producer.getConfiguration().getSslContextParameters() == null) {
                 // just set the enabledProtocols if the SslContextParameter doesn't set

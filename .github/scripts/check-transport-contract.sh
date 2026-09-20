@@ -191,6 +191,25 @@ if awk '/<artifactId>netty-tcnative<\/artifactId>/,/<\/dependency>/' \
   exit 1
 fi
 
+# ---------------------------------------------------------------------------
+# Hostname verification on the outbound client.
+#
+# SNI and endpoint identification are easy to confuse and do unrelated jobs: SNI
+# only tells the server which name the client wants, while endpoint
+# identification is what compares the certificate the server actually presented
+# against the host that was dialled. The client set the former and not the
+# latter, so any chain the trust store accepted was accepted for ANY hostname.
+# ---------------------------------------------------------------------------
+CLIENT_FACTORY=proxy/cloudhsm/proxy/src/main/java/com/amazon/aws/pix/cloudhsm/proxy/camel/netty/NettyHttpClientInitializerFactory.java
+
+if ! grep -qF 'setEndpointIdentificationAlgorithm("HTTPS")' "$CLIENT_FACTORY"; then
+  echo "ERROR: $CLIENT_FACTORY no longer enables hostname verification." >&2
+  echo "       setSSLParameters with an SNI name alone does NOT check the server certificate" >&2
+  echo "       against the host that was dialled. See TlsHostnameVerificationTest, whose" >&2
+  echo "       negative control shows the mismatch is accepted without this call." >&2
+  exit 1
+fi
+
 echo "OK: transport contract options present, and KMS stays out of maintained CI"
 fi
 exit "$rc"

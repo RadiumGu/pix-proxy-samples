@@ -83,7 +83,7 @@ This project contains source code and supporting files that includes the followi
 - `proxy/core` - Sign XML messages.
 - `proxy/test` - BACEN simulator.
 
-The main code of application uses several AWS resources, including AWS CLoudHSM and an AWS Fargate. The audit part of solution use other AWS resources, including [Amazon Kinesis Firehose](https://aws.amazon.com/kinesis/data-firehose/?nc1=h_ls), [Amazon Athena](https://aws.amazon.com/athena/?nc1=h_ls&whats-new-cards.sort-by=item.additionalFields.postDateTime&whats-new-cards.sort-order=desc), [Amazon S3](https://aws.amazon.com/s3/?nc1=h_ls) and [AWS Glue](https://docs.aws.amazon.com/glue/latest/dg/components-overview.html).
+The main code of application uses several AWS resources, including AWS CloudHSM and an AWS Fargate. The audit part of solution use other AWS resources, including [Amazon Data Firehose](https://aws.amazon.com/firehose/) (formerly **Amazon Kinesis Data Firehose**), [Amazon Athena](https://aws.amazon.com/athena/?nc1=h_ls&whats-new-cards.sort-by=item.additionalFields.postDateTime&whats-new-cards.sort-order=desc), [Amazon S3](https://aws.amazon.com/s3/?nc1=h_ls) and [AWS Glue](https://docs.aws.amazon.com/glue/latest/dg/components-overview.html).
 
 
 ## Version requirements: BCB Pix, TLS, JDK and CloudHSM
@@ -238,6 +238,14 @@ The architecture presented here can be part of a more complete, [event-based sol
 
 <p align="center">
   <img src="/images/proxy-cloudhsm-arch.png" width="600" height="600">
+
+> This diagram is **generated**, not hand-drawn. Its source is
+> [`tools/generate_architecture_diagram.py`](tools/generate_architecture_diagram.py), which composes
+> the official [AWS Architecture Icons](https://aws.amazon.com/architecture/icons/) (release
+> `07312026`). Re-run it when AWS ships a new icon release or renames a service — the script fails
+> loudly if an icon it expects is no longer in the package, which is how the renames of
+> *Kinesis Data Firehose → Data Firehose* and *QuickSight → Quick* were caught. The icon set itself
+> is deliberately not committed here; download it from the link above and pass `--icons`.
 </p>
 
 
@@ -249,14 +257,14 @@ The architecture presented here can be part of a more complete, [event-based sol
 6. Application (AWS Fargate) uses AWS CloudHSM for digital signature of XML.
 7. Application (AWS Fargate) uses AWS CloudHSM to establish mTLS and transmit XML to [BACEN](https://www.bcb.gov.br/en/financialstability/instantpayments).
 8. Application (AWS Fargate) receives the response from BACEN and, if necessary, validates the digital signature of the received XML.
-9. Application (AWS Fargate) logs the request log by sending it directly to [Amazon Kinesis Data Firehose](https://aws.amazon.com/en/kinesis/data-firehose/).
+9. Application (AWS Fargate) logs the request log by sending it directly to [Amazon Data Firehose](https://aws.amazon.com/en/kinesis/data-firehose/).
 10. The reply message is sent to the ELB.
 11. The reply message is received by the Service/Application.
-12. Amazon Kinesis Data Firehose uses the [AWS Glue Data Catalog](https://aws.amazon.com/en/glue/?whats-new-cards.sort-by=item.additionalFields.postDateTime&whats-new-cards.sort-order=desc) to convert the logs to parquet format.
-13. Amazon Kinesis Data Firehose sends the logs to [Amazon S3](https://aws.amazon.com/en/s3/), already partitioned into “folders” (/year/month/day/hour/).
+12. Amazon Data Firehose uses the [AWS Glue Data Catalog](https://aws.amazon.com/en/glue/?whats-new-cards.sort-by=item.additionalFields.postDateTime&whats-new-cards.sort-order=desc) to convert the logs to parquet format.
+13. Amazon Data Firehose sends the logs to [Amazon S3](https://aws.amazon.com/en/s3/), already partitioned into “folders” (/year/month/day/hour/).
 14. [Amazon Athena](https://docs.aws.amazon.com/athena/latest/ug/glue-athena.html) uses the AWS Glue Data Catalog as a central place to store and retrieve table metadata.
 15. [AWS Glue crawlers](https://docs.aws.amazon.com/glue/latest/dg/add-crawler.html) automatically update the metadata repository every hour.
-16. You can immediately query the data directly on Amazon S3 using serverless analytics services, such as [Amazon Athena](https://aws.amazon.com/en/athena/?whats-new-cards.sort-by=item.additionalFields.postDateTime&whats-new-cards.sort-order=desc) (ad hoc with standard SQL) and optionally the [Amazon QuickSight](https://aws.amazon.com/en/quicksight/).
+16. You can immediately query the data directly on Amazon S3 using serverless analytics services, such as [Amazon Athena](https://aws.amazon.com/en/athena/?whats-new-cards.sort-by=item.additionalFields.postDateTime&whats-new-cards.sort-order=desc) (ad hoc with standard SQL) and optionally the [Amazon Quick](https://aws.amazon.com/quicksight/) (formerly **Amazon QuickSight**).
 
 
 ## How to deploy?
@@ -593,7 +601,7 @@ The SPI table must be pointed to the S3 bucket that you created and must have th
 
 5. [Create a crawler](https://docs.aws.amazon.com/glue/latest/dg/add-crawler.html) with target to the created tables (SPI and DICT).
 
-6. Create two Amazon Kinesis Firehose delivery streams: (SPI and DICT) in the AWS Glue Data Catalog to make the conversion in parquet format. Thus, we have the following prefixes and the destination S3 bucket:
+6. Create two Amazon Data Firehose delivery streams: (SPI and DICT) in the AWS Glue Data Catalog to make the conversion in parquet format. Thus, we have the following prefixes and the destination S3 bucket:
 
   * DICT develivery stream:
     * Deliver to S3 Bucket created
@@ -783,7 +791,7 @@ NAoejbjou87yzYUTY8nRnw==
 - If any parameter above is created as a **SecureString**, also allow `kms:Decrypt` on that
   parameter's KMS key. The application requests decryption unconditionally, which is ignored for
   plain `String` parameters.
-- Put data (log) into deliver streams (Amazon Kinesis Data Firehose).
+- Put data (log) into deliver streams (Amazon Data Firehose).
 - [Connect](https://docs.aws.amazon.com/cloudhsm/latest/userguide/configure-sg.html) to the AWS CloudHSM cluster.
 
 You have to expose the service using **INTERNAL** [Application Load Balancer](https://docs.aws.amazon.com/elasticloadbalancing/latest/application/create-application-load-balancer.html).
@@ -798,8 +806,8 @@ You have to expose the service using the **INTERNAL** [Network Load Balancer](ht
 
 2. You have to configure a [private hosted zone](https://docs.aws.amazon.com/Route53/latest/DeveloperGuide/hosted-zone-private-creating.html) with domain name `rsfn.net.br`. Also, use this [procedure](https://aws.amazon.com/premiumsupport/knowledge-center/route-53-create-alias-records/) to configure an A record for the name `test.pi.rsfn.net.br` and specify the alias for the TEST Network Load Balancer.
 
-### Amazon Athena and Amazon QuickSight
+### Amazon Athena and Amazon Quick
 
 1. Use this [procedure](https://docs.aws.amazon.com/athena/latest/ug/getting-started.html) to use Amazon Athena to query data in the S3 bucket created previously. 
 
-2. Optionally, you can use [Amazon QuickSight](https://docs.aws.amazon.com/quicksight/latest/user/setup-new-quicksight-account.html) that lets you easily create and publish interactive dashboards that include ML Insights. Dashboards can then be accessed from any device, and embedded into your applications, portals, and website.
+2. Optionally, you can use [Amazon Quick](https://docs.aws.amazon.com/quicksight/latest/user/setup-new-quicksight-account.html) that lets you easily create and publish interactive dashboards that include ML Insights. Dashboards can then be accessed from any device, and embedded into your applications, portals, and website.

@@ -99,6 +99,15 @@ public class PixCloudHSMProxyRouteBuilder extends EndpointRouteBuilder {
         createFirehoseClient();
     }
 
+    /**
+     * Durable fallback for audit records Firehose refuses. The directory is overridable because a
+     * spool on the container filesystem dies with the task; point it at a mounted volume in
+     * production and ship the file.
+     */
+    private final com.amazon.aws.pix.core.audit.AuditSpool auditSpool =
+            new com.amazon.aws.pix.core.audit.AuditSpool(java.nio.file.Paths.get(
+                    System.getProperty("pix.audit.spool.dir", "/work")));
+
     /** Registry name of the custom initializer; referenced explicitly by bcbEndpoint(). */
     private static final String CLIENT_INITIALIZER_FACTORY = "nettyHttpClientInitializerFactory";
 
@@ -129,7 +138,7 @@ public class PixCloudHSMProxyRouteBuilder extends EndpointRouteBuilder {
                 .process(new DecodeResponseProcessor())
                 .transform(body().convertToString())
                 .process(new VerifyResponseProcessor(xmlSigner))
-                .process(new LogRequestResponseProcessor(firehoseClient, streamName));
+                .process(new LogRequestResponseProcessor(firehoseClient, streamName, auditSpool));
 
     }
 

@@ -1,6 +1,7 @@
 package com.amazon.aws.pix.cloudhsm.proxy.processor;
 
 import com.amazon.aws.pix.core.audit.AuditLog;
+import com.amazon.aws.pix.core.audit.AuditSpool;
 import com.amazon.aws.pix.core.util.PixConstants;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -22,6 +23,8 @@ public class LogRequestResponseProcessor implements Processor {
 
     private final FirehoseClient firehoseClient;
     private final String streamName;
+    /** Durable fallback for records Firehose refused; see {@link AuditSpool}. */
+    private final AuditSpool auditSpool;
 
     @Override
     public void process(Exchange exchange) throws Exception {
@@ -37,9 +40,11 @@ public class LogRequestResponseProcessor implements Processor {
                         .collect(Collectors.toMap(Map.Entry::getKey, Map.Entry::getValue))
         );
 
+        final String auditJson = auditLog.toJson();
+
         PutRecordRequest putRecordRequest = PutRecordRequest.builder()
                 .deliveryStreamName(streamName)
-                .record(builder -> builder.data(SdkBytes.fromUtf8String(auditLog.toJson())))
+                .record(builder -> builder.data(SdkBytes.fromUtf8String(auditJson)))
                 .build();
 
         // The audit write is the LAST step of the route. Letting it throw fails the whole
@@ -48,22 +53,31 @@ public class LogRequestResponseProcessor implements Processor {
         // inconsistency for a payment proxy. Audit delivery must therefore not fail the
         // transaction. See upstream issue #18.
         //
-        // NOTE FOR PRODUCTION: swallowing the failure trades a correctness problem for a
-        // compliance one - a lost audit record. Before going live you MUST decide, in
-        // writing and with compliance sign-off, which of the two is acceptable, and add:
-        //   1. a durable fallback sink (e.g. CloudWatch Logs) so the record is not lost;
-        //   2. an alarm on this log line - an unaudited transaction is a compliance event;
-        //   3. ideally, move the write off the critical path entirely (bounded queue +
+        // Swallowing the failure traded a correctness problem for a compliance one - a lost
+        // audit record. Item 1 below is now DONE: the record is written to a local spool
+        // instead of vanishing. Items 2 and 3 remain open and still need a decision:
+        //   1. DONE - durable fallback, see AuditSpool. Note its limit: a spool on a
+        //      container filesystem dies with the task, so mount a volume and ship the file.
+        //   2. STILL OPEN - alarm on AuditSpool.spooledCount() being non-zero, and on the
+        //      Firehose errorOutputPrefix. An unaudited transaction is a compliance event
+        //      and nothing in this repository watches for one.
+        //   3. STILL OPEN - move the write off the critical path (bounded queue +
         //      background PutRecordBatch).
+        // Also still open, and NOT solved by the spool: a transport or TLS failure on the BCB
+        // leg aborts the exchange before this processor runs at all, so no record exists to
+        // spool. Fixing that needs the audit write moved into an onCompletion block.
         try {
             PutRecordResponse putRecordResponse = firehoseClient.putRecord(putRecordRequest);
             if (log.isDebugEnabled()) {
                 log.debug("audit record delivered, recordId={}", putRecordResponse.recordId());
             }
         } catch (Exception e) {
+            final boolean spooled = auditSpool.spool(auditJson);
             log.error("AUDIT DELIVERY FAILED for stream {} - transaction was NOT failed. "
-                    + "This is a compliance event: alarm on this line and recover the record.",
-                    streamName, e);
+                    + "This is a compliance event: alarm on this line. Record {} to the local "
+                    + "spool ({}). A spool on a container filesystem does NOT survive the task.",
+                    streamName, spooled ? "WAS written" : "COULD NOT be written",
+                    auditSpool.status(), e);
         }
     }
 }

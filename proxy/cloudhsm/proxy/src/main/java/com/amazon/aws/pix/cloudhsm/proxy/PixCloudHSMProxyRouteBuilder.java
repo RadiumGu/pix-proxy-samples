@@ -99,9 +99,18 @@ public class PixCloudHSMProxyRouteBuilder extends EndpointRouteBuilder {
         createFirehoseClient();
     }
 
+    /** Registry name of the custom initializer; referenced explicitly by bcbEndpoint(). */
+    private static final String CLIENT_INITIALIZER_FACTORY = "nettyHttpClientInitializerFactory";
+
+    /**
+     * Read-timeout bound for the BCB leg, in milliseconds. An operational safety limit rather than
+     * a BCB protocol value; reconcile with the Manual de Tempos do Pix before homologação.
+     */
+    private static final long BCB_READ_TIMEOUT_MS = 30_000L;
+
     @Override
     public void configure() throws Exception {
-        getContext().getRegistry().bind("nettyHttpClientInitializerFactory", new NettyHttpClientInitializerFactory());
+        getContext().getRegistry().bind(CLIENT_INITIALIZER_FACTORY, new NettyHttpClientInitializerFactory());
 
         configure(8080, xmlSigner, getParameter(Param.BcbDictEndpoint), getParameter(Param.DictAuditStream));
         configure(9090, iso20022XmlSigner, getParameter(Param.BcbSpiEndpoint), getParameter(Param.SpiAuditStream));
@@ -146,7 +155,21 @@ public class PixCloudHSMProxyRouteBuilder extends EndpointRouteBuilder {
                 // 1.0 by default, which are below the manual's floor.
                 .enabledProtocols("TLSv1.2,TLSv1.3")
                 .sslContextParameters(nettySSLContextParameters)
-                .advanced().nativeTransport(true);
+                // The custom factory only installs a ReadTimeoutHandler when requestTimeout > 0,
+                // and its default is 0 = disabled. Unbounded reads mean a BCB that completes the
+                // handshake then stalls holds a netty worker and a pooled connection forever. This
+                // bound is an operational safety limit, NOT a BCB protocol value - reconcile it
+                // with the Manual de Tempos do Pix before homologação.
+                .requestTimeout(BCB_READ_TIMEOUT_MS)
+                .advanced()
+                .nativeTransport(true)
+                // MEASURED, and the reason this line exists: binding the factory into the registry
+                // is NOT enough. Camel does not autowire clientInitializerFactory - without this
+                // explicit reference it instantiates the STOCK HttpClientInitializerFactory, and
+                // NettyHttpClientInitializerFactory (the only code that reads
+                // NettySSLContextParameters.getSslContext()) never runs. The CloudHSM mTLS client
+                // key and the pinned BCB trust anchor would then never reach TLS at all.
+                .clientInitializerFactory("#" + CLIENT_INITIALIZER_FACTORY);
     }
 
     private EndpointConsumerBuilder checkEndpoint() {
@@ -204,7 +227,12 @@ public class PixCloudHSMProxyRouteBuilder extends EndpointRouteBuilder {
                 .sslProvider(SslProvider.OPENSSL)
                 .keyManager(signatureKey, certificates)
                 .trustManager(trustCertificates)
-                .protocols("TLSv1.2")
+                // Must match the endpoint's enabledProtocols. The custom initializer applies
+                // enabledProtocols ONLY when sslContextParameters is null, and here it is not, so
+                // whatever is pinned on THIS builder is what the handshake offers. Leaving
+                // "TLSv1.2" here would silently drop TLS 1.3 despite the endpoint asking for it.
+                // Manual de Seguranca do Pix v3.7 section 2: "TLS versao 1.2 ou superior".
+                .protocols("TLSv1.2", "TLSv1.3")
                 .build();
     }
 

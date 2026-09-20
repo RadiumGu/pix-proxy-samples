@@ -97,6 +97,26 @@ else
         "could not locate the decode/convert/verify steps, so their ordering cannot be checked"
 fi
 
+# Client initializer wiring. MEASURED trap: binding the factory into the Camel registry does NOT
+# wire it - Camel does not autowire clientInitializerFactory, so without an explicit #reference the
+# STOCK HttpClientInitializerFactory runs instead. Since the custom factory is the only code that
+# reads NettySSLContextParameters.getSslContext(), losing it means the CloudHSM mTLS client key and
+# the pinned BCB trust anchor never reach TLS - against a BCB that mandates mutual auth. Pinned by
+# NettyClientInitializerFactoryWiringTest as well.
+require "$CLOUDHSM_ROUTE" '.clientInitializerFactory("#" + CLIENT_INITIALIZER_FACTORY)' \
+    "the custom netty initializer must be referenced explicitly, or the CloudHSM SslContext is silently unused"
+
+# Read timeout. The custom factory installs a ReadTimeoutHandler only when requestTimeout > 0, and
+# Camel's default is 0 = unbounded. A BCB that handshakes then stalls would hold a worker forever.
+require "$CLOUDHSM_ROUTE" ".requestTimeout(BCB_READ_TIMEOUT_MS)" \
+    "the BCB leg must have a bounded read timeout"
+
+# The io.netty SslContext pins its own protocol list, and the custom factory applies the endpoint's
+# enabledProtocols ONLY when sslContextParameters is null - which it is not here. So this builder is
+# what the handshake actually offers; pinning only TLSv1.2 here would silently drop 1.3.
+require "$CLOUDHSM_ROUTE" '.protocols("TLSv1.2", "TLSv1.3")' \
+    "the SslContext must offer the same protocol pair as the endpoint, or one of them is dead config"
+
 echo "== CloudHSM local simulator: $SIMULATOR_ROUTE"
 
 require "$SIMULATOR_ROUTE" ".matchOnUriPrefix(true)" \

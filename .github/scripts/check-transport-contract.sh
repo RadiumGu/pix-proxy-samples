@@ -296,6 +296,36 @@ if ! printf '%s' "$CHECK_ROUTE_CODE" | grep -q 'pix.tls.revocation.enabled'; the
   exit 1
 fi
 
+# ---------------------------------------------------------------------------
+# A compressed request must be refused BEFORE the body becomes a String.
+#
+# BCB does not accept compressed requests. Once gzip bytes go through a charset
+# decode they are destroyed irreversibly, and the route then produced a valid PSP
+# signature over the wreckage and sent it to BCB. Presence alone is not enough here -
+# the refusal is only effective if it runs before convertToString(), so the order is
+# pinned by line number.
+# ---------------------------------------------------------------------------
+if ! printf '%s' "$CHECK_ROUTE_CODE" | grep -q 'new RejectCompressedRequestProcessor()'; then
+  echo "ERROR: $CLOUDHSM_ROUTE no longer refuses compressed request bodies, so a gzip request" >&2
+  echo "       would be charset-decoded into mojibake and then SIGNED with the PSP key." >&2
+  exit 1
+fi
+
+REJECT_LINE=$(grep -n 'new RejectCompressedRequestProcessor()' "$CLOUDHSM_ROUTE" | head -1 | cut -d: -f1)
+CONVERT_LINE=$(grep -n 'transform(body()\.convertToString())' "$CLOUDHSM_ROUTE" | head -1 | cut -d: -f1)
+
+if [ -z "$REJECT_LINE" ] || [ -z "$CONVERT_LINE" ]; then
+  echo "ERROR: could not locate the compressed-request refusal and the string conversion in" >&2
+  echo "       $CLOUDHSM_ROUTE to check their order." >&2
+  exit 1
+fi
+if [ "$REJECT_LINE" -ge "$CONVERT_LINE" ]; then
+  echo "ERROR: the compressed-request refusal (line $REJECT_LINE) must come BEFORE the string" >&2
+  echo "       conversion (line $CONVERT_LINE). After it, the body is already destroyed and the" >&2
+  echo "       refusal cannot prevent a signature over corrupted bytes." >&2
+  exit 1
+fi
+
 echo "OK: transport contract options present, and KMS stays out of maintained CI"
 fi
 exit "$rc"

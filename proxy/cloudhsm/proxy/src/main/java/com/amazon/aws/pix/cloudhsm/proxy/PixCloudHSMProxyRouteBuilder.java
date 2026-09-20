@@ -5,6 +5,7 @@ import com.amazon.aws.pix.cloudhsm.proxy.camel.netty.NettySSLContextParameters;
 import com.amazon.aws.pix.cloudhsm.proxy.processor.CaptureRequestProcessor;
 import com.amazon.aws.pix.cloudhsm.proxy.processor.DecodeResponseProcessor;
 import com.amazon.aws.pix.cloudhsm.proxy.processor.LogRequestResponseProcessor;
+import com.amazon.aws.pix.cloudhsm.proxy.processor.RejectCompressedRequestProcessor;
 import com.amazon.aws.pix.cloudhsm.proxy.processor.SignRequestProcessor;
 import com.amazon.aws.pix.cloudhsm.proxy.processor.VerifyResponseProcessor;
 import com.amazon.aws.pix.core.util.KeyStoreUtil;
@@ -185,6 +186,11 @@ public class PixCloudHSMProxyRouteBuilder extends EndpointRouteBuilder {
                 .onCompletion()
                     .process(new LogRequestResponseProcessor(firehoseClient, streamName, auditSpool))
                 .end()
+                // Must precede convertToString(). A compressed request body that reaches the
+                // string conversion is destroyed irreversibly, and the route would then sign the
+                // wreckage - a valid PSP signature over a corrupted document. BCB does not accept
+                // compressed requests at all, so this refuses with 415 and stops the route.
+                .process(new RejectCompressedRequestProcessor())
                 .transform(body().convertToString())
                 .process(new SignRequestProcessor(xmlSigner))
                 .process(new CaptureRequestProcessor())

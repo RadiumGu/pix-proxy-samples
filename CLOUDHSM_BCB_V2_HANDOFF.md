@@ -237,6 +237,46 @@ channel. This gap is therefore about **completeness of the compliance argument**
 "no exceptions" rather than "one exception with compensating controls" — not about a high-severity
 hole. Do not let it displace higher-severity work.
 
+#### Verified on real hardware, 2026-09-20 (hsm2m.medium, FIPS, Client SDK 5.18.0)
+
+A throwaway cluster was stood up in us-east-1 to settle what a stub could not. Results:
+
+**A non-extractable SDK 5 key returns `null` from `getEncoded()` — MEASURED.** Generated with
+`cloudhsm-cli key generate-asymmetric-pair rsa --private-attributes extractable=false sign=true`,
+whose attributes read back `"extractable": false, "never-extractable": true,
+"always-sensitive": true`. Loaded through the SDK 5 JCE provider:
+
+```
+keyClass = com.amazonaws.cloudhsm.jce.provider.CloudHsmRsaPrivateCrtKey
+getFormat  = null
+getEncoded = null
+```
+
+This confirms the stub in `MtlsNonExtractableKeyTest` behaves like the real thing, and it settles a
+question this section previously left open: **path B must use `SslProvider.JDK`, not `OPENSSL`.**
+Because `getEncoded()` is `null` on SDK 5 exactly as on SDK 3, Netty's OPENSSL path
+(`PemPrivateKey.toPEM` → `IllegalArgumentException: does not support encoding`) fails the same way
+after the migration. Migrating to SDK 5 does **not** by itself make the current Netty code work.
+
+**`extractable=false` must be set explicitly.** SDK 5 defaults to extractable, so a migration that
+simply ports the key-generation step will silently produce an *exportable* mTLS key — the opposite of
+the intent. MEASURED: omitting the attribute is accepted without warning.
+
+**Four SDK 3 → 5 migration facts this repository does not yet record**, all MEASURED:
+
+1. `hsm2m.medium` requires a `Mode` argument on `CreateCluster` (`FIPS` or `NON_FIPS`);
+   `hsm1.medium` did not. Omitting it fails with
+   `CloudHsmInvalidRequestException: Mode is a required argument for this hsm type.`
+2. SDK 5 enforces a **key-availability quorum of 2 HSMs by default**. On a single-HSM cluster every
+   key operation fails with *"the key must be available on at least 2 HSMs"* until the check is
+   disabled. This is a sound production default and a trap for anyone running one HSM.
+3. SDK 5 configures **each component separately** — `configure-cli`, `configure-jce` and
+   `configure-dyn` are three different binaries with three different config files. Configuring the
+   CLI alone leaves the JCE holding the literal placeholder `%%HSM_IP_ADDRESS%%` and it fails with
+   `Config key hostname has invalid value`. The container entrypoint currently configures one thing;
+   under SDK 5 it must configure each component it uses.
+4. `cloudhsm-cli key generate-asymmetric-pair rsa` requires `--public-exponent`; it has no default.
+
 #### Remedies, ranked
 
 | | Approach | Requires SDK 3 → 5 migration? | Java code change | Main risk |

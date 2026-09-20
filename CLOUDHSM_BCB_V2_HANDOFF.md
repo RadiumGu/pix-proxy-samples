@@ -35,6 +35,49 @@ Facts relevant to this skeleton:
 8. **DNS TTL must be respected.** The security manual states clients "devem sempre respeitar o TTL" of the DNS servers, warning that failing to do so can cause loss of access. This skeleton resolves configuration once at startup and has not been checked against that requirement — open item.
 9. **DICT API version moved on.** Released version is **2.12.1**; **2.13.0_rc1** is in progress. Two corrections to an earlier draft of this line, because the attribution was wrong: `PI-RequestingParticipant` → `^(?i)[a-z0-9]{8}` is **already in the released 2.12.1**, not an rc1 change — it was listed as forthcoming here, which would have led a reader to treat a current contract as speculative. And `PI-PayerId` in 2.12.1 is `^([0-9]{11}|[0-9]{14})$`, i.e. plain CPF/CNPJ digits; it is **not** a pseudonymised 64-character value (that reading came from a v1-era third-party source and is wrong for v2). The genuine **rc1** changes are `PI-PayerId` → `^([0-9]{11}|[A-Z0-9]{12}[0-9]{2})$` for the **alphanumeric CNPJ** now being introduced in Brazil, and account number → `^[A-Z0-9]{1,20}$`. None of it affects this proxy, which forwards bytes and never parses business content; `DictV2RequestPolicy` checks header *presence* only. Also of note: `getBucketState`/`listBucketStates` moved off `dict-ratelimit.pi.rsfn.net.br` in 2.6.0 and the old host now returns **HTTP 410** (`Gone`/`DeprecatedResource`, which is a documented DICT status); MED 2.0 Funds Recovery, Fraud Markers and Event Notifications endpoints exist but are out of scope per section 1.
 
+## 2A. Homologação gate — BCB certificate revocation checking
+
+Revocation checking is **implemented and tested but shipped OFF**
+(`-Dpix.tls.revocation.enabled=true` to switch it on, `pix.tls.revocation.softfail` to choose the
+failure mode). Netty's default trust manager performs **no** revocation checking whatsoever, so
+until this is enabled a revoked BCB certificate is accepted. It is off rather than on because two
+preconditions are deployment facts this repository cannot determine, and getting either wrong is
+worse than the status quo.
+
+**Precondition 1 — the trust parameter must hold the ICP-Brasil CA, not the BCB leaf.** If
+`BcbMtlsCertificate` holds the leaf, that leaf becomes the trust anchor, and PKIX does **not**
+revocation-check an anchor: an anchor is trusted by assumption and has no issuer above it to publish
+a CRL. Enabling revocation checking against a pinned leaf is therefore a pure no-op that merely
+looks secure. This is asserted, not assumed —
+`RevocationAwareTrustManagersTest.pinningTheLeafSilentlyDisablesRevocationChecking` shows the chain
+passing even under **hard** fail.
+
+**Precondition 2 — CRL/OCSP must be reachable from RSFN.** The proxy reaches BCB over RSFN, a
+private network, while ICP-Brasil publishes its CRL and OCSP endpoints on the public internet.
+Assume reachable and hard-fail, and if it is not, *every* TLS handshake to BCB fails. Assume
+unreachable and soft-fail, and revocation is never actually verified.
+
+**A measured trap that makes precondition 2 sharper than expected.** `SOFT_FAIL` does **not**
+tolerate revocation information being *absent* — only a *failure to retrieve* it. Measured: a chain
+whose certificates carry no CRL distribution point and no OCSP URL is rejected with
+`CertPathValidatorException: Could not determine revocation status` under **both** modes. Real
+ICP-Brasil certificates do carry distribution points, so soft fail does cover the RSFN-unreachable
+case in production — but a self-signed staging endpoint or the local simulator would be rejected
+outright even in soft-fail mode. Enabling this can break a test environment while leaving production
+working, which is the direction that wastes a day.
+
+**What must be verified at homologação, and cannot be verified here:**
+
+| # | Question | Why it cannot be answered from this repository |
+|---|---|---|
+| 1 | Does `BcbMtlsCertificate` hold the ICP-Brasil CA (chain v10) or the BCB leaf? | Deployment parameter; both are valid inputs to the same code path |
+| 2 | Can an RSFN-attached container reach ICP-Brasil CRL endpoints? | Network egress fact, and `dict.pi.rsfn.net.br` has no public DNS record |
+| 3 | Is OCSP available as a fallback there? | Same |
+| 4 | Soft fail or hard fail for the Pix leg? | A risk decision for the PSP, not a technical one — soft fail accepts a possibly-revoked certificate, hard fail turns a CRL outage into a Pix outage |
+
+Until 1 and 2 are answered, leaving the switch off is the honest state: the alternative is a
+configuration that reports success while checking nothing.
+
 ## 3. What is already fixed and verified
 
 - XML `KeyInfo` uses certificate **Issuer DN**, not Subject DN (upstream issue #15), with a CA-issued regression fixture (`Subject != Issuer`).

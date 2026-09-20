@@ -282,22 +282,66 @@ public class PixCloudHSMProxyRouteBuilder extends EndpointRouteBuilder {
         cloudHsmKeyStore.load(null, null);
     }
 
-    private void createSslContext() throws SSLException, UnrecoverableKeyException, NoSuchAlgorithmException, KeyStoreException {
+    /**
+     * Whether to validate the BCB certificate path with revocation checking instead of the default
+     * trust manager, which performs none at all.
+     *
+     * <p>Default OFF, and that is a considered position rather than timidity. Two preconditions are
+     * deployment facts this repository cannot check, and getting either wrong is worse than the
+     * status quo:
+     *
+     * <ol>
+     *   <li>The trust parameter must hold the ICP-Brasil <b>CA</b>, not the BCB leaf. With a pinned
+     *       leaf, revocation checking is structurally impossible - PKIX does not revocation-check a
+     *       trust anchor - so switching it on would be a pure no-op that merely looks secure.
+     *       Proven by RevocationAwareTrustManagersTest.</li>
+     *   <li>The container must be able to reach ICP-Brasil's CRL or OCSP endpoints from inside
+     *       RSFN. If it cannot, hard fail takes the proxy down completely; and soft fail only
+     *       rescues an <em>unreachable</em> endpoint, not a certificate with no distribution point
+     *       at all - also measured in that test.</li>
+     * </ol>
+     *
+     * <p>So the switch exists, is tested, and is off until someone confirms both facts. The startup
+     * log states which mode is active so the answer is never assumed.
+     */
+    private static final boolean TLS_REVOCATION_ENABLED =
+            Boolean.parseBoolean(System.getProperty("pix.tls.revocation.enabled", "false"));
+
+    /** Soft fail tolerates an unreachable CRL/OCSP endpoint; hard fail treats it as fatal. */
+    private static final boolean TLS_REVOCATION_SOFT_FAIL =
+            Boolean.parseBoolean(System.getProperty("pix.tls.revocation.softfail", "true"));
+
+    private void createSslContext() throws Exception {
         PrivateKey signatureKey = (PrivateKey) cloudHsmKeyStore.getKey(getParameter(Param.MtlsKeyLabel), null);
         Collection<X509Certificate> certificates = KeyStoreUtil.getCertificates(getParameter(Param.MtlsCertificate));
         Collection<X509Certificate> trustCertificates = KeyStoreUtil.getCertificates(getParameter(Param.BcbMtlsCertificate));
 
-        sslContext = SslContextBuilder.forClient()
+        SslContextBuilder builder = SslContextBuilder.forClient()
                 .sslProvider(SslProvider.OPENSSL)
                 .keyManager(signatureKey, certificates)
-                .trustManager(trustCertificates)
                 // Must match the endpoint's enabledProtocols. The custom initializer applies
                 // enabledProtocols ONLY when sslContextParameters is null, and here it is not, so
                 // whatever is pinned on THIS builder is what the handshake offers. Leaving
                 // "TLSv1.2" here would silently drop TLS 1.3 despite the endpoint asking for it.
                 // Manual de Seguranca do Pix v3.7 section 2: "TLS versao 1.2 ou superior".
-                .protocols("TLSv1.2", "TLSv1.3")
-                .build();
+                .protocols("TLSv1.2", "TLSv1.3");
+
+        if (TLS_REVOCATION_ENABLED) {
+            log.warn("BCB TLS: revocation checking ENABLED (softFail={}). This requires the trust "
+                    + "parameter to hold the ICP-Brasil CA rather than the BCB leaf - with a pinned "
+                    + "leaf no revocation check can occur - and requires CRL/OCSP reachability from "
+                    + "RSFN.", TLS_REVOCATION_SOFT_FAIL);
+            builder.trustManager(
+                    com.amazon.aws.pix.core.tls.RevocationAwareTrustManagers.create(trustCertificates, TLS_REVOCATION_SOFT_FAIL));
+        } else {
+            log.warn("BCB TLS: revocation checking is DISABLED - a revoked BCB certificate would be "
+                    + "accepted. Set -Dpix.tls.revocation.enabled=true once the trust parameter "
+                    + "holds the ICP-Brasil CA and CRL/OCSP reachability from RSFN is confirmed. "
+                    + "See CLOUDHSM_BCB_V2_HANDOFF.md.");
+            builder.trustManager(trustCertificates);
+        }
+
+        sslContext = builder.build();
     }
 
     private void createXmlSigners() throws UnrecoverableKeyException, NoSuchAlgorithmException, KeyStoreException {

@@ -274,6 +274,28 @@ if ! printf '%s' "$CHECK_ROUTE_CODE" | grep -q 'hsmHealthProbe\.check()'; then
   exit 1
 fi
 
+# ---------------------------------------------------------------------------
+# The revocation-checking path must remain reachable.
+#
+# Netty's default trust manager performs NO revocation checking, so a revoked BCB
+# certificate is accepted. The capability is off by default because enabling it needs
+# two deployment facts this repository cannot check - the trust parameter holding the
+# ICP-Brasil CA rather than the BCB leaf, and CRL/OCSP reachability from RSFN - but the
+# wiring must not be quietly deleted, or the switch becomes undocumented dead config.
+# ---------------------------------------------------------------------------
+if ! printf '%s' "$CHECK_ROUTE_CODE" | grep -q 'RevocationAwareTrustManagers\.create('; then
+  echo "ERROR: $CLOUDHSM_ROUTE no longer wires RevocationAwareTrustManagers into the BCB TLS" >&2
+  echo "       context, so pix.tls.revocation.enabled can no longer do anything. Netty's default" >&2
+  echo "       trust manager checks no revocation at all." >&2
+  exit 1
+fi
+
+if ! printf '%s' "$CHECK_ROUTE_CODE" | grep -q 'pix.tls.revocation.enabled'; then
+  echo "ERROR: $CLOUDHSM_ROUTE no longer reads pix.tls.revocation.enabled, so revocation" >&2
+  echo "       checking cannot be switched on in a deployment." >&2
+  exit 1
+fi
+
 echo "OK: transport contract options present, and KMS stays out of maintained CI"
 fi
 exit "$rc"

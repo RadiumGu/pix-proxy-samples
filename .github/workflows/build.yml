@@ -54,6 +54,38 @@ jobs:
       - name: Compile CloudHSM simulator (without unsupported KMS)
         run: mvn -B -f proxy/pom.xml -pl core,test package -DskipTests
 
+  dict-v2-contract:
+    name: DICT v2 transparent-proxy contract test
+    runs-on: ubuntu-latest
+    # Why a separate job: every other job here either skips tests (-DskipTests) or is
+    # best-effort, so before this job existed NOTHING in CI executed the transparent-proxy
+    # contract test. A test CI never runs is not a gate. This job runs it and nothing else,
+    # so a contract regression is attributable at a glance.
+    #
+    # It needs no CloudHSM rpm, no HSM, no certificates and no AWS: the contract test drives
+    # camel-netty-http over plain loopback HTTP. That also keeps it off the external
+    # rpm download the cloudhsm job depends on, so this gate cannot go red for unrelated reasons.
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '11'
+          cache: maven
+
+      - name: Run DICT v2 contract + core tests
+        run: mvn -B -f proxy/pom.xml -pl core,test test
+
+      - name: Upload surefire reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: surefire-dict-v2-contract
+          path: |
+            proxy/core/target/surefire-reports/
+            proxy/test/target/surefire-reports/
+          if-no-files-found: warn
+
   cloudhsm:
     name: cloudhsm - compile (needs the CloudHSM JCE rpm, best effort)
     runs-on: ubuntu-latest

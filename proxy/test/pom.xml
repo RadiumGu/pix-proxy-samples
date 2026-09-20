@@ -59,6 +59,17 @@
             <groupId>software.amazon.awssdk</groupId>
             <artifactId>url-connection-client</artifactId>
         </dependency>
+
+        <!--
+          Test scope only. The BCB DICT v2 transparent-proxy contract test drives real
+          camel-netty-http routes over plain HTTP, so it needs a test runner here; version is
+          managed by the parent pom. Nothing in src/main gains a dependency from this.
+        -->
+        <dependency>
+            <groupId>junit</groupId>
+            <artifactId>junit</artifactId>
+            <scope>test</scope>
+        </dependency>
     </dependencies>
 
     <build>

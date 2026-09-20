@@ -145,7 +145,7 @@ The mandatory cipher suite has been available since **JDK 8u161**, and TLS 1.3 s
 | Item | State |
 |---|---|
 | This code targets | Client **SDK 3** (`com.cavium.cfm2`, `PARTITION_1`, `key_mgmt_util`) |
-| `hsm1.medium` | **cannot be created since April 2025**; end of support **2026-03-31** (past) |
+| `hsm1.medium` | **cannot be created** — measured against the live API in `us-east-1` on 2026-09-20: `CreateCluster` with `hsm1.medium` returns `CloudHsmInvalidRequestException: Provided HsmType is not supported.` End of support was **2026-03-31** (past) |
 | `hsm2m.medium` | the only creatable type; requires Client SDK **5.9.0+** |
 | SDK 5 JCE provider | supports **OpenJDK 17 / 21 / 25** only |
 

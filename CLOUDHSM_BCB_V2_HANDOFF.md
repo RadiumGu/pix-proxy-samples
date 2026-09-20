@@ -272,9 +272,14 @@ adds a component to maintain (version, CVEs, configuration).
    (`proxy_ssl_certificate_key`), and whether that directive also goes through the engine is not
    covered by AWS documentation. `stunnel` in `client = yes` mode is the most direct alternative and
    documents `engine` / `engineId` explicitly. **Validate this before committing to path D.**
-2. **A real CloudHSM key has not been tested.** The evidence above uses a stub. Confirming that a
-   real Cavium non-extractable key returns `null` from `getEncoded()` needs a cluster and the
-   x86_64 tcnative artifact, so it cannot run in CI or on this machine.
+2. **A real CloudHSM key has not been tested, and on new infrastructure it CANNOT be.** The
+   evidence above uses a stub. Testing the real thing would mean a Cavium SDK 3 key, and SDK 3 only
+   works with `hsm1.medium` — which is no longer creatable. Measured against the live API in
+   `us-east-1` on 2026-09-20: `CreateCluster` with `hsm1.medium` returns
+   `CloudHsmInvalidRequestException: Provided HsmType is not supported.` So the SDK 3 code path in
+   this repository can no longer be stood up at all, and confirming `getEncoded() == null` on a real
+   Cavium key is **permanently unverifiable** rather than merely pending a cluster. What a cluster
+   CAN still verify is the *remedies* below, on `hsm2m.medium` with Client SDK 5.
 3. **Proof that the handshake's private-key operation happens inside the HSM.** Whichever remedy is
    chosen, the acceptance criterion is a CloudHSM **audit-log** entry for the handshake operation —
    not merely a successful handshake. Build that check into the POC.

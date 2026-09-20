@@ -38,8 +38,8 @@ jobs:
           path: proxy/core/target/surefire-reports/
           if-no-files-found: warn
 
-  kms-and-simulator:
-    name: kms + simulator - compile
+  simulator:
+    name: CloudHSM simulator - compile
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -49,23 +49,10 @@ jobs:
           java-version: '11'
           cache: maven
 
-      # proxy/kms/pom.xml (upstream, unchanged by this fork) depends on
-      # software.amazon.awssdk:kms-jce-provider:1.0.0, which has NEVER been published:
-      # search.maven.org returns numFound=0 for that artifactId at any version, and
-      # aws-samples/aws-kms-jce has zero GitHub releases. Without this step the job fails
-      # with "Could not find artifact ... in central" and says nothing about whether the
-      # source compiles. Building the provider from source yields exactly the coordinate
-      # the pom asks for, so we do that first. Pinned to a commit rather than a moving
-      # branch so the build stays reproducible.
-      - name: Build and install kms-jce-provider from source (unpublished artifact)
-        run: |
-          set -euo pipefail
-          git clone https://github.com/aws-samples/aws-kms-jce.git /tmp/aws-kms-jce
-          git -C /tmp/aws-kms-jce checkout 6f7f1792cbee221f21620e21b0e632f46ad96fb7
-          mvn -B -f /tmp/aws-kms-jce/pom.xml install -DskipTests
-
-      - name: Compile proxy/kms and proxy/test
-        run: mvn -B -f proxy/pom.xml -pl core,kms,test package -DskipTests
+      # proxy/test is the maintained CloudHSM teaching simulator. KMS is deliberately
+      # historical/unsupported in this fork and must not make the maintained path red.
+      - name: Compile CloudHSM simulator (without unsupported KMS)
+        run: mvn -B -f proxy/pom.xml -pl core,test package -DskipTests
 
   cloudhsm:
     name: cloudhsm - compile (needs the CloudHSM JCE rpm, best effort)

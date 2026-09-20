@@ -4,6 +4,16 @@
   <img src="/images/proxy-cloudhsm.png">
 </p>
 
+> ## ⚠️ Maintained scope and BCB currency boundary
+>
+> This fork maintains **only** the CloudHSM teaching skeleton: **XML digital signatures, mTLS, CloudHSM client/container integration, and transparent HTTP proxying**. It is a transport/cryptography reference, **not** a complete Pix PSP implementation.
+>
+> **Explicitly out of scope (not a backlog):** payment initiation; inbound SPI asynchronous messages; settlement/reconciliation; refund business workflows; MED 2.0 / Funds Recovery; Fraud Markers; Event Notifications; Pix Automático; authorization; liquidity; fraud decisions; and operational SLAs. A real PSP must implement these in separate domain services under current BCB rules.
+>
+> **DICT v2 boundary:** DICT API v1 was fully disabled on 2024-02-04. Production callers must send `/api/v2/...`; the local `test.pi.rsfn.net.br` simulator below is not BCB homologação. Before every homologação/production release, obtain the current BCB OpenAPI, Security Manual, endpoint bases, certificate chain and allowed TLS policy: [DICT API](https://www.bcb.gov.br/content/estabilidadefinanceira/pix/API-DICT.html) · [changelog](https://bcb.gov.br/content/estabilidadefinanceira/pix/changelog.html).
+>
+> See [`VERIFICATION.md`](VERIFICATION.md) for tested CloudHSM fixes and [`CLOUDHSM_BCB_V2_HANDOFF.md`](CLOUDHSM_BCB_V2_HANDOFF.md) for the remaining CloudHSM-only work.
+
 This project contains source code and supporting files that includes the following folders:
 
 - `proxy/cloudhsm` - Proxy that uses AWS CloudHSM.
@@ -448,31 +458,39 @@ To find out the CloudHSM Cluster Id is simple. In the AWS console, type CloudHSM
 <FIREHOSE_SPI_DELIVERY_STREAM_NAME>
 ```
 
-9. [Create](https://docs.aws.amazon.com/systems-manager/latest/userguide/sysman-paramstore-su-create.html) a parameter `/pix/proxy/cloudhsm/BcbDictEndpoint` and value:
-```
-<DICT_ENDPOINT>
-```
-> **⚠️ The simulator certificate below has a PUBLIC private key.** It ships in this repository at
-> `proxy/test/src/main/docker/ssl/` next to `sig.key` / `mtls.key`, and its subject is BACEN's real
-> production domain (`O=BCB, OU=PIX, CN=*.pi.rsfn.net.br`, valid until 2030-07-03). Anyone who can
-> read this repository can forge a response that a proxy trusting it will accept as signed by BACEN.
->
-> This parameter is the SAME one production uses, so switching from the simulator to real BACEN is
-> "remember to change this value" - and nothing else in the system would notice if you forget: the
-> certificate is well-formed, in date, and in the trust store by construction. The application logs
-> an ERROR naming this certificate at startup when it is trusted (see `WellKnownTestCertificates`);
-> alarm on that line in any environment meant to reach real BACEN.
+9. [Create](https://docs.aws.amazon.com/systems-manager/latest/userguide/sysman-paramstore-su-create.html) a parameter `/pix/proxy/cloudhsm/BcbDictEndpoint`.
 
-TO USE THE TEST - SIMULATOR, use:
+> **Value format:** hostname plus port only — do **not** include `https://`, a trailing slash, or `/api/v2`. The CloudHSM proxy uses Camel `bridgeEndpoint(true)` and preserves the incoming request path/query string. The calling application must therefore send the BCB v2 path (for example `/api/v2/entries/{Key}`) to the proxy.
+>
+> **BCB DICT v2 baseline (verify with BCB before use):**
+> - Homologação: `dict-h.pi.rsfn.net.br:16522`
+> - Production: `dict.pi.rsfn.net.br:16422`
+> - API v1 was fully disabled on 2024-02-04. Do not configure or call `/v1/` paths.
+>
+> These are BCB endpoint bases, not a substitute for BCB participant onboarding, current certificates, Security Manual requirements, or homologação tests.
+
+```
+<DICT_V2_HOST_AND_PORT>
+```
+
+> **⚠️ Local simulator certificate warning.** The simulator certificate has a PUBLIC private key. It ships in this repository at `proxy/test/src/main/docker/ssl/` next to `sig.key` / `mtls.key`, and its subject is BACEN's real production domain (`O=BCB, OU=PIX, CN=*.pi.rsfn.net.br`, valid until 2030-07-03). Anyone who reads this repository can forge a response accepted by a proxy trusting that certificate.
+>
+> The `BcbSignatureCertificate` parameter is the same trust mechanism used in production. Switching from the simulator to BCB is not merely changing the endpoint: replace **both** BCB trust certificates with the current BCB-provided chain. The application logs an ERROR naming this known simulator certificate when it is trusted (`WellKnownTestCertificates`); alarm on that line outside local simulation.
+
+**Local simulator only — not a BCB endpoint:**
 ```
 test.pi.rsfn.net.br:8181
 ```
 
-10. [Create](https://docs.aws.amazon.com/systems-manager/latest/userguide/sysman-paramstore-su-create.html) a parameter `/pix/proxy/cloudhsm/BcbSpiEndpoint` and value:
+10. [Create](https://docs.aws.amazon.com/systems-manager/latest/userguide/sysman-paramstore-su-create.html) a parameter `/pix/proxy/cloudhsm/BcbSpiEndpoint`.
+
+> **Value format:** hostname plus port only. The caller supplies the SPI message path. The sample `pacs.008.spi.1.4` fixture and the local simulator are historical teaching material; obtain the current SPI Message Definition, XSD, endpoint, certificate chain and TLS policy from BCB before homologação/production use. Do not infer a production SPI endpoint or message version from this repository.
+
 ```
-<SPI_ENDPOINT>
+<SPI_HOST_AND_PORT_FROM_CURRENT_BCB_ONBOARDING>
 ```
-TO USE THE TEST - SIMULATOR, use:
+
+**Local simulator only — not a BCB endpoint:**
 ```
 test.pi.rsfn.net.br:9191
 ```

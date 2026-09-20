@@ -376,18 +376,59 @@ it is what should be put in front of an auditor.
 - The same handshake driven by stunnel or nginx rather than `openssl s_client`. Low risk now, since
   the key is referenced by an ordinary file path that any key-file directive accepts, and
   `openssl s_client` and stunnel share the same OpenSSL engine plumbing.
-- **Whether this repository's `XmlSigner` works against an SDK 5 keystore.** Not tested. It would
-  have needed the `pix-core` jar shipped onto the instance, and the POC cluster was torn down first
-  to stop it billing. What target 4 already establishes is the part that actually constrains the
-  design: an SDK 5 key is null-encoded, so the signing path must take the key as a `PrivateKey`
-  handle and never ask for its bytes — which `XmlSigner` already does, since it receives a
-  `PrivateKey` and a `KeyStore` rather than key material. The open question is narrower than it
-  looks: whether JSR-105 selects the CloudHSM provider for the `Signature` operation.
+**`XmlSigner` works unmodified against an SDK 5 keystore — MEASURED, and this is the good news in
+this section.** Run on hardware with SDK 5.18.0 against a key generated in the HSM with
+`extractable=false` (read back as `never-extractable: true`):
+
+```
+provider         = CloudHSM v5018000.0
+privateKey class = com.amazonaws.cloudhsm.jce.provider.CloudHsmRsaPrivateCrtKey
+getEncoded       = null
+getFormat        = null
+SIGN_OK          = true, length=1729
+has <Signature>  = true
+VERIFY           = true
+```
+
+JSR-105 routes the `Signature` operation to the CloudHSM provider, so the XML-signing half of this
+repository needs **no changes at all** for an SDK 3 to 5 migration. That matters for scoping: the
+migration difficulty is confined entirely to the **TLS/mTLS** half, where Netty wants key *bytes*
+(see path B above). Signing wants a *handle*, and a handle is what an HSM can give.
+
+The fixture is worth reproducing rather than fighting. `keytool -genkeypair -storetype CloudHSM`
+fails with `The given alias "pixsign" does not match label ""`, so the key is generated with
+`cloudhsm-cli` instead. `XmlSigner` takes the `PrivateKey` and the `X509Certificate` as separate
+arguments, which means they need not come from one keystore: the private key is fetched from the
+CloudHSM keystore by label, while the certificate is issued for the *exported public* key with
+`openssl x509 -req -force_pubkey` and a throwaway CA. Public keys are extractable, private keys are
+not, and `-force_pubkey` needs no proof of possession — so a usable certificate exists without the
+private key ever participating. Verified by comparing the certificate's public key against the
+exported one; the two digests matched.
 
 **POC teardown, verified 2026-09-20.** `describe-clusters` returns 0 clusters; the EC2 instance is
 `terminated`; the security group is deleted; the throwaway cluster CA private key was shredded. One
 unrelated pre-existing *stopped* Cloud9 instance remains in the account and was deliberately left
 alone.
+
+#### Update after the CVE overrides: path A got cheaper
+
+Closing CVE-2021-43797 moved Netty from 4.1.49.Final to 4.1.118.Final, and that changes this
+section's own cost estimate. `MtlsNonExtractableKeyTest` was written to fail loudly if Netty were
+ever upgraded, and it did exactly that.
+
+Path A (hand the handshake's private-key operation to the HSM through Netty's own callback) was
+recorded as needing a framework upgrade **and** a native-library swap, because
+`OpenSslContextOption` did not exist at all on 4.1.49. On 4.1.118 it does, together with
+`PRIVATE_KEY_METHOD`, `ASYNC_PRIVATE_KEY_METHOD` and the `OpenSslPrivateKeyMethod` interface an
+HSM-backed signer would implement. The framework half is therefore already paid for.
+
+What still blocks path A is narrower but real: `PRIVATE_KEY_METHOD` is restricted to BoringSSL,
+while this repository pins the `linux-x86_64-fedora` tcnative artifact, which is the dynamically
+linked OpenSSL build. Also measured — initializing `OpenSslPrivateKeyMethod` throws
+`NoClassDefFoundError` for `io.netty.internal.tcnative.SSLPrivateKeyMethod`, so the callback API is
+not reachable from `netty-handler` alone and drags in `netty-tcnative-classes` too. Path A is now a
+native-library swap rather than a framework upgrade, which is materially cheaper than recorded, but
+it is still not a configuration change and path D remains the recommendation.
 
 #### Remedies, ranked
 

@@ -14,6 +14,69 @@
 >
 > See [`VERIFICATION.md`](VERIFICATION.md) for tested CloudHSM fixes and [`CLOUDHSM_BCB_V2_HANDOFF.md`](CLOUDHSM_BCB_V2_HANDOFF.md) for the remaining CloudHSM-only work.
 
+## BCB homologação release checklist
+
+**What CI proves and what it does not.** The maintained CI proves the transport contract
+mechanically: the DICT v2 path, query string (including repeated parameters), the BCB `PI-*`
+headers and the XML body survive the proxy hop; XML signing/verification works; an expired versus
+a not-yet-valid trusted certificate are distinguishable; and the local simulator refuses a
+malformed v2 request instead of answering 200. **None of that is evidence of BCB compatibility.**
+The local simulator on `test.pi.rsfn.net.br:8181/:9191` is a loopback test double — BCB homologação
+is `dict-h.pi.rsfn.net.br:16522`.
+
+Work through this before any homologação or production release. Every unchecked box is a reason not
+to release, not a nice-to-have.
+
+- [ ] **Current BCB materials obtained** — DICT v2 OpenAPI, the Security Manual, endpoint bases,
+      certificate chain and allowed TLS policy, taken from BCB onboarding/support rather than from
+      this repository. The Security Manual link on BCB's API page returned 404 during research on
+      2026-09-20, so this cannot be short-cut from here.
+- [ ] **DICT v2 OpenAPI / XSD version recorded** in your release notes, with the exact version you
+      validated against. This repository performs **no XSD schema validation at all** and its
+      sample messages must not be treated as a version reference.
+- [ ] **TLS policy confirmed against BCB's current manual.** The BCB leg is pinned to `TLSv1.2`
+      because that is the only protocol exercised here; CI fails if it is changed
+      (`.github/scripts/check-transport-contract.sh`). Do not raise it to TLS 1.3 on the strength
+      of this repository — confirm the approved protocol and cipher list, then prove it in
+      homologação.
+- [ ] **Certificate chain validated against a real BCB endpoint**, and hostname validation
+      decided deliberately: it is **not** enabled here, mitigated only by explicitly trusting the
+      BCB certificate (certificate pinning).
+- [ ] **Both BCB trust certificates replaced** with the current BCB-provided chain.
+      `BcbSignatureCertificate` and `BcbMtlsCertificate` are the same parameters the simulator
+      uses, so switching from the simulator is not merely changing an endpoint. The application
+      logs an ERROR naming a known simulator certificate when one is trusted
+      (`WellKnownTestCertificates`) — alarm on that line outside local simulation.
+- [ ] **Certificate expiry and rotation monitoring in place.** Configuration is read **once at
+      startup**, so rotating a certificate requires a redeploy. There is no expiry monitoring in
+      this repository.
+- [ ] **Request and response signatures accepted by BCB in homologação**, including a round trip
+      against BCB's own published signed sample messages. The local simulator reuses *our* signer,
+      so a green simulator run only proves we agree with ourselves.
+- [ ] **Error handling exercised for 400 / 403 / 404 / 409 / 410 / 429 / 503.** The simulator can
+      produce all seven on request via the `PI-Simulate-Status` header — a **simulator affordance
+      that must never be sent to real BCB**. Confirm your caller and your audit records handle
+      each, then confirm the real codes and conditions with BCB, since the simulator's mapping is
+      this repository's policy and not BCB behaviour.
+- [ ] **mTLS private-key policy decided in writing.** The mTLS key must be **extractable** for the
+      current Netty TLS path, so this deployment does not satisfy the strictest reading of
+      "the private key never leaves the institution's control". The signing key is unaffected and
+      non-extractable. See `CLOUDHSM_BCB_V2_HANDOFF.md` §7.1 — and note that simply making the key
+      non-extractable fails at handshake time.
+- [ ] **Audit durability decision made**, per the code comments in `LogRequestResponseProcessor`:
+      audit delivery deliberately does not fail a transaction, which trades a correctness problem
+      for a compliance one. A durable fallback sink and an alarm on `AUDIT DELIVERY FAILED` are
+      required, and whether an audit failure should reject a transaction is a compliance call.
+- [ ] **LGPD handling for the audit log.** Records contain full message bodies — names, CPF,
+      account numbers, amounts — with no redaction in this repository.
+- [ ] **HSM generation and session handling reviewed.** This code targets **CloudHSM Client SDK 3**
+      and `hsm1.medium`, which can no longer be created and reached end of support on 2026-03-31;
+      `hsm2m.medium` requires Client SDK 5.9.0+. There is also no HSM session reconnect. See
+      `VERIFICATION.md`.
+- [ ] **Multi-HSM failover tested** on a cluster with at least two HSMs, replacing one while
+      running. A single-HSM environment cannot exercise this.
+- [ ] **No claim made anywhere that the local simulator proves BCB compatibility.**
+
 This project contains source code and supporting files that includes the following folders:
 
 - `proxy/cloudhsm` - Proxy that uses AWS CloudHSM.

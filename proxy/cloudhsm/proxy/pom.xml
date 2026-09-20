@@ -72,7 +72,14 @@
         <dependency>
             <groupId>com.cavium</groupId>
             <artifactId>cloudhsm</artifactId>
-            <version>[3.0.0,)</version>
+            <!--
+              Was [3.0.0,) - an open range, so the build compiled against whatever version the
+              mutable "latest" rpm happened to contain, and Maven would pick up a newer one
+              silently. The rpm is now pinned in the parent pom, which makes the version knowable,
+              so the range is closed to an exact value. A mismatch between the pinned rpm and this
+              version fails the build instead of being absorbed.
+            -->
+            <version>${cloudhsm.sdk3.version}</version>
         </dependency>
         <dependency>
             <groupId>org.apache.logging.log4j</groupId>

@@ -50,6 +50,28 @@
         <netty.version>4.1.118.Final</netty.version>
         <netty-tcnative.version>2.0.70.Final</netty-tcnative.version>
         <jackson.version>2.15.4</jackson.version>
+
+        <!--
+          CloudHSM Client SDK 3 (the legacy Cavium JCE provider), pinned as one unit.
+
+          These three values are coupled and must move together. cloudhsm/cavium downloads the
+          rpm named by the version below, verifies it against the digest, unpacks it, and installs
+          the jar it contains into the local repository as com.cavium:cloudhsm. The jar inside
+          rpm 3.4.4-1 is cloudhsm-3.4.4.jar, which is why the artifact version is 3.4.4 while the
+          rpm version carries the -1 release suffix.
+
+          cloudhsm/proxy previously depended on the open range [3.0.0,) because the version was
+          not knowable until the mutable "latest" rpm had been unpacked. Pinning the rpm makes it
+          knowable, so the range is closed. If the rpm is ever replaced by a different version the
+          artifact version will no longer match and the build FAILS LOUDLY, which is the point -
+          the old arrangement absorbed such a change silently.
+
+          SDK 3 is end-of-life and hsm1.medium can no longer be created, so this path cannot be
+          verified on real hardware - see README-CloudHSM.md. Treat it as frozen legacy.
+        -->
+        <cloudhsm.sdk3.rpm.version>3.4.4-1</cloudhsm.sdk3.rpm.version>
+        <cloudhsm.sdk3.rpm.sha256>70e3cdce143c45a76e155ffb5969841e0153e011f59eb9f2c6e6be0707030abf</cloudhsm.sdk3.rpm.sha256>
+        <cloudhsm.sdk3.version>3.4.4</cloudhsm.sdk3.version>
     </properties>
 
     <modules>

@@ -16,12 +16,12 @@ jobs:
     name: core - build + test (the signature logic)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4 (v4.3.1)
 
       # JDK 11 on purpose: proxy/pom.xml sets java.version=11, and proxy/core/pom.xml
       # relies on --add-exports against two java.xml.crypto internal packages. Changing
       # the JDK major version here would not be testing what this project actually ships.
-      - uses: actions/setup-java@v4
+      - uses: actions/setup-java@cf277c60eb25467037889841efdb72551f06f6c3 # v4 (v4.7.1)
         with:
           distribution: temurin
           java-version: '11'
@@ -32,7 +32,7 @@ jobs:
 
       - name: Upload surefire reports
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4 (v4.6.2)
         with:
           name: surefire-core
           path: proxy/core/target/surefire-reports/
@@ -42,8 +42,8 @@ jobs:
     name: CloudHSM simulator - compile
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-java@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4 (v4.3.1)
+      - uses: actions/setup-java@cf277c60eb25467037889841efdb72551f06f6c3 # v4 (v4.7.1)
         with:
           distribution: temurin
           java-version: '11'
@@ -66,8 +66,8 @@ jobs:
     # camel-netty-http over plain loopback HTTP. That also keeps it off the external
     # rpm download the cloudhsm job depends on, so this gate cannot go red for unrelated reasons.
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-java@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4 (v4.3.1)
+      - uses: actions/setup-java@cf277c60eb25467037889841efdb72551f06f6c3 # v4 (v4.7.1)
         with:
           distribution: temurin
           java-version: '11'
@@ -78,7 +78,7 @@ jobs:
 
       - name: Upload surefire reports
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4 (v4.6.2)
         with:
           name: surefire-dict-v2-contract
           path: |
@@ -87,31 +87,49 @@ jobs:
           if-no-files-found: warn
 
   cloudhsm:
-    name: cloudhsm - compile (needs the CloudHSM JCE rpm, best effort)
+    name: cloudhsm - compile (production module GATES; SDK 3 rpm fetch is best effort)
     runs-on: ubuntu-latest
-    # Non-blocking on purpose: proxy/cloudhsm/cavium downloads
-    # cloudhsm-client-jce-latest.el7.x86_64.rpm from a public S3 bucket at build time and
-    # unpacks it with rpm-maven-plugin. That makes this job dependent on an external
-    # download and on `rpm` being available, neither of which we control. A red mark here
-    # does not mean the source is broken - check the `core` job for that.
-    continue-on-error: true
+    # No job-level continue-on-error any more, and that is the point.
+    #
+    # It used to be non-blocking wholesale, because this job needs an SDK 3 rpm fetched from
+    # a public S3 bucket at build time - an external dependency we do not control, and one
+    # that WILL rot, since AWS disables download links for unsupported Client SDK versions
+    # and SDK 3 is end-of-life. But making the whole job advisory also meant a genuine
+    # compile break in proxy/cloudhsm/proxy - the production route, the TLS factory, the
+    # processors - never failed the build. That module is the point of this repository.
+    #
+    # So the two concerns are separated instead of traded off. Fetching and installing the
+    # SDK 3 jar stays best effort at STEP level. Compiling our own source GATES, and is
+    # skipped rather than failed when the prerequisite could not be fetched - with a warning
+    # so a skipped gate is never mistaken for a passed one.
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-java@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4 (v4.3.1)
+      - uses: actions/setup-java@cf277c60eb25467037889841efdb72551f06f6c3 # v4 (v4.7.1)
         with:
           distribution: temurin
           java-version: '11'
           cache: maven
       - name: Install rpm tooling (required by rpm-maven-plugin)
         run: sudo apt-get update && sudo apt-get install -y rpm
-      - name: Compile proxy/cloudhsm
-        run: mvn -B -f proxy/pom.xml -pl core,cloudhsm/cavium,cloudhsm/proxy package -DskipTests
+      - name: Fetch and install the SDK 3 JCE jar (external download - best effort)
+        id: sdk3
+        continue-on-error: true
+        run: mvn -B -f proxy/pom.xml -pl core,cloudhsm/cavium install -DskipTests
+      - name: Compile proxy/cloudhsm/proxy - THIS GATES
+        if: steps.sdk3.outcome == 'success'
+        run: mvn -B -f proxy/pom.xml -pl cloudhsm/proxy package -DskipTests
+      - name: Say plainly that the gate was skipped, not passed
+        if: steps.sdk3.outcome != 'success'
+        run: |
+          echo "::warning::The SDK 3 JCE rpm could not be fetched, so the proxy/cloudhsm/proxy"
+          echo "::warning::compile gate was SKIPPED - it did not pass. SDK 3 is end-of-life and"
+          echo "::warning::its download links are withdrawn over time; see the pin in proxy/pom.xml."
 
   shell:
     name: wrapper_script.sh - shellcheck
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4 (v4.3.1)
       - name: Syntax check
         run: |
           bash -n proxy/cloudhsm/proxy/src/main/docker/wrapper_script.sh
@@ -131,7 +149,7 @@ jobs:
     # keeps production declaring them. It also guards the CloudHSM-only scope by failing if KMS
     # re-enters the maintained workflow.
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4 (v4.3.1)
       - name: Check transport contract options and scope
         run: bash .github/scripts/check-transport-contract.sh
 
@@ -141,7 +159,7 @@ jobs:
     # Turns upstream issue #16 into a build failure instead of silent data loss:
     # any field AuditLog emits must be declared as a column in both READMEs.
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4 (v4.3.1)
       - name: Compare emitted keys against documented columns
         run: |
           set -euo pipefail

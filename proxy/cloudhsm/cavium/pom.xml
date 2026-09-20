@@ -22,14 +22,37 @@
                 <version>1.5.1</version>
                 <executions>
                     <execution>
-                        <id>cloudhsm-client-jce-latest-download</id>
+                        <id>cloudhsm-client-jce-download</id>
                         <goals>
                             <goal>wget</goal>
                         </goals>
                         <phase>generate-resources</phase>
                         <configuration>
                             <skipCache>true</skipCache>
-                            <url>https://s3.amazonaws.com/cloudhsmv2-software/CloudHsmClient/EL7/cloudhsm-client-jce-latest.el7.x86_64.rpm</url>
+                            <!--
+                              Pinned, and deliberately NOT "...-latest.el7.x86_64.rpm".
+
+                              The build derives com.cavium:cloudhsm's version from the jar
+                              filename inside this rpm, so a mutable "latest" URL meant the
+                              compiled-against API could change without a single line of this
+                              repository changing - and nothing recorded which version a given
+                              build had used. The versioned object exists and is byte-identical
+                              to what "latest" served when this was pinned (same size, same
+                              digest), so this costs nothing today and removes the drift.
+
+                              The sha256 makes the download fail loudly if the object is ever
+                              replaced, rather than silently compiling against something else.
+
+                              NOTE on link rot: AWS disables download links for unsupported
+                              Client SDK versions, and SDK 3 is end-of-life - so expect this URL
+                              to disappear rather than change. That is the honest state of this
+                              whole module: see README-CloudHSM.md, hsm1.medium can no longer be
+                              created, which makes SDK 3 unverifiable on real hardware. Bump the
+                              pin only if a newer EL7 SDK 3 rpm is still published; the real fix
+                              is to stop depending on SDK 3.
+                            -->
+                            <url>https://s3.amazonaws.com/cloudhsmv2-software/CloudHsmClient/EL7/cloudhsm-client-jce-${cloudhsm.sdk3.rpm.version}.el7.x86_64.rpm</url>
+                            <sha256>${cloudhsm.sdk3.rpm.sha256}</sha256>
                             <outputDirectory>${project.build.directory}/cloudhsm-client-jce</outputDirectory>
                         </configuration>
                     </execution>
@@ -41,13 +64,16 @@
                 <version>2.2.0</version>
                 <executions>
                     <execution>
-                        <id>cloudhsm-client-jce-latest-unpack</id>
+                        <id>cloudhsm-client-jce-unpack</id>
                         <goals>
                             <goal>unpack</goal>
                         </goals>
                         <phase>generate-resources</phase>
                         <configuration>
-                            <rpmFile>${project.build.directory}/cloudhsm-client-jce/cloudhsm-client-jce-latest.el7.x86_64.rpm</rpmFile>
+                            <!-- Must track the pinned filename above, or the unpack silently
+                                 finds nothing and the antrun version export yields an empty
+                                 version. -->
+                            <rpmFile>${project.build.directory}/cloudhsm-client-jce/cloudhsm-client-jce-${cloudhsm.sdk3.rpm.version}.el7.x86_64.rpm</rpmFile>
                             <unpackDirectory>${project.build.directory}/cloudhsm-client-jce</unpackDirectory>
                         </configuration>
                     </execution>

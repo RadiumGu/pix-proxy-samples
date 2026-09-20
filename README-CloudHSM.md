@@ -173,10 +173,11 @@ so a test placed in them would silently never run.
 export JAVA_HOME=~/.local/opt/jdk11
 export PATH=$JAVA_HOME/bin:$PATH
 
-# 1. Signature, TLS and content-decoding unit tests (38 tests)
+# 1. Signature, TLS and content-decoding unit tests (38 tests as of 2026-09-20)
 mvn -B -f proxy/pom.xml -pl core test
 
-# 2. Everything that executes, including the DICT v2 transport contract (38 + 35 tests)
+# 2. Everything that executes, including the DICT v2 transport contract
+#    (core 38 + proxy/test 38 as of 2026-09-20)
 mvn -B -f proxy/pom.xml -pl core,test test
 
 # 3. Simulator build
@@ -204,7 +205,12 @@ bash .github/scripts/check-transport-contract.sh
 | gzip response reaches verification as the signed XML | `DictV2CompressedResponseContractTest` (proxy/test) |
 | path / query / repeated query / headers / body preserved | `DictV2TransparentProxyContractTest` (proxy/test) |
 | simulator request policy | `DictV2RequestPolicyTest` (proxy/test) |
+| why the mTLS key must currently be extractable, and why Netty's private-key callback is not available here | `MtlsNonExtractableKeyTest` (proxy/test) |
 | production route still declares the pinned options, decode precedes verify | `check-transport-contract.sh` |
+
+The counts above are dated on purpose. They move whenever a test is added, so treat the **CI run's
+own output** as authoritative rather than this page — and when you add a test, confirm the count in
+that output instead of trusting a green tick.
 
 ### Negative controls
 

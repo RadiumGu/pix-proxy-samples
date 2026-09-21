@@ -363,6 +363,45 @@ management performed with it while the cluster membership changes can leave user
 Do not add HSMs while it is running. SDK 5's `cloudhsm-cli` does not have this problem, and the
 client reconfigures itself as HSMs come and go — which is what was measured here.
 
+### A key created while a new HSM is joining
+
+The join restores a **snapshot**. A key created after that snapshot was taken is not in it, so
+something else has to carry it across. That something is **server-side synchronisation**, which
+AWS describes as periodically cloning keys to every HSM in the cluster and requiring no
+management. It exists precisely as the fallback for this case — client-side synchronisation
+cannot help, because it clones at creation time to the HSMs that are in the cluster *then*.
+
+What actually happens depends on the cluster size and the quorum setting:
+
+| Expansion | Quorum | Creating a key mid-join |
+|---|---|---|
+| 1 → 2 HSMs | enabled | **Creation fails.** One ACTIVE HSM cannot satisfy a quorum of two. The situation is prevented, not handled. |
+| 1 → 2 HSMs | disabled | Creation succeeds on the old HSM, and the key exists on **one HSM only** until server-side synchronisation runs. Losing that HSM in the window loses the key beyond the last backup. |
+| 2 → 3 HSMs | enabled | Creation succeeds — the two existing HSMs satisfy the quorum and client-side synchronisation puts the key on both. The key is on 2 of 3 until server-side synchronisation reaches the third. |
+
+In the 2 → 3 case the quorum is satisfied throughout, so the key is never *blocked*. But a
+quorum of two is not the same as "the HSM this call is routed to has the key", and AWS documents
+that a call routed to an HSM without the key **fails**. So a call can still fail during the
+window, and the documented mitigation is application-level retry. (That composition of two
+documented behaviours is our reading; it was not measured.)
+
+**The server-side synchronisation interval is not documented**, so catch-up time cannot be bounded
+from the documentation — AWS says only that it "can vary, depending on the workload of your
+cluster and other intangibles", and points at CloudWatch to determine the timing an application
+should use.
+
+**How to detect that a key did not propagate.** `HsmKeysTokenOccupied` in the `AWS/CloudHSM`
+namespace reports token keys in use per **HSM instance** as well as per cluster. AWS's own
+monitoring best practices recommend alarming on *"differences in HSM user or key count to
+identify synchronization issues"* — so comparing that metric across the HSM IDs of one cluster is
+the supported way to see divergence. A persistent difference means keys exist on some HSMs and
+not others. Note `HsmUsersAvailable` gives the same handle for user divergence, which is the
+other thing a join has to carry.
+
+This completes the operational rule for configuration B: count ACTIVE HSMs before creating a key,
+confirm the new key is usable before relying on it, and alarm on per-HSM key-count divergence so
+a synchronisation failure is visible rather than discovered by a failing signature.
+
 ### `cluster-coverage: full` does not mean what it looks like
 
 This is the trap in this whole area, and it invalidates the obvious safety check.

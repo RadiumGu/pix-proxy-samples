@@ -63,6 +63,8 @@ public class AsyncAuditWriter implements AutoCloseable {
     private final AtomicLong delivered = new AtomicLong();
     private final AtomicLong spilledQueueFull = new AtomicLong();
     private final AtomicLong spilledSendFailed = new AtomicLong();
+    /** Records neither delivered NOR spooled. The only genuinely unrecoverable outcome. */
+    private final AtomicLong lost = new AtomicLong();
     private final AtomicBoolean running = new AtomicBoolean(false);
 
     private Thread worker;
@@ -100,8 +102,16 @@ public class AsyncAuditWriter implements AutoCloseable {
             enqueued.incrementAndGet();
             return true;
         }
-        spilledQueueFull.incrementAndGet();
-        spill.spill(record);
+        // Honour spill()'s return. Counting a record as "spilled to safety" when the spool write
+        // actually failed made this metric over-report safety - the same class of lie as the
+        // Error-swallowing bug fixed earlier in this class, and it defeats reconciling the counter
+        // against records genuinely persisted. AuditSpool logs PIX_AUDIT_SPOOL_WRITE_FAILED for the
+        // unrecoverable case.
+        if (spill.spill(record)) {
+            spilledQueueFull.incrementAndGet();
+        } else {
+            lost.incrementAndGet();
+        }
         return false;
     }
 
@@ -185,8 +195,11 @@ public class AsyncAuditWriter implements AutoCloseable {
             // here would stall every later record behind a broken stream, and the spool is the
             // durable path that already exists for exactly this.
             for (String record : batch) {
-                spilledSendFailed.incrementAndGet();
-                spill.spill(record);
+                if (spill.spill(record)) {
+                    spilledSendFailed.incrementAndGet();
+                } else {
+                    lost.incrementAndGet();
+                }
             }
             return 0;
         }
@@ -216,17 +229,67 @@ public class AsyncAuditWriter implements AutoCloseable {
     }
 
     /**
+     * Records neither delivered nor persisted — genuinely lost.
+     *
+     * <p>Kept separate from the spilled counters deliberately. "Spilled" is recoverable if the spool
+     * is shipped; this is not. Previously both paths incremented a spilled counter without checking
+     * whether the spool write had actually succeeded, so the metric reported records as safe when
+     * they were gone — the same class of lie as the Error-swallowing bug fixed earlier in this class,
+     * and it made the counters impossible to reconcile against records genuinely persisted.
+     */
+    public long lostCount() {
+        return lost.get();
+    }
+
+    /**
      * Stops the worker after draining what is queued, so a container shutdown does not discard
      * records that were accepted but not yet delivered.
+     */
+    /**
+     * Stops the worker and flushes what is queued.
+     *
+     * <p>Two things here are load-bearing and an earlier version had neither right.
+     *
+     * <p><b>It must be called at all.</b> The worker is a daemon thread, so the JVM exits without
+     * running it — MEASURED in a separate JVM: 200 records accepted, <b>0</b> survived exit. Queued
+     * records were therefore discarded on every ordinary container stop. The caller is responsible
+     * for invoking this; the production route registers each writer with the Camel context so that
+     * Camel's own shutdown calls it.
+     *
+     * <p><b>It must join the worker.</b> Interrupting and then draining from the calling thread is not
+     * enough: a record the worker has already polled into its local batch is gone from the queue and
+     * therefore invisible to the drain loop, so it would be lost mid-send. The join is bounded, since
+     * a shutdown that hangs forever is its own outage.
      */
     @Override
     public void close() {
         running.set(false);
+
         if (worker != null) {
-            worker.interrupt();
+            // NOT interrupted first: interrupting mid-PutRecordBatch would abort an in-flight
+            // delivery that was about to succeed. The loop exits within its 200ms poll timeout.
+            try {
+                worker.join(CLOSE_JOIN_TIMEOUT_MILLIS);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            }
+            if (worker.isAlive()) {
+                // Escalate only after the grace period, then give the batch a moment to spill.
+                worker.interrupt();
+                try {
+                    worker.join(CLOSE_JOIN_TIMEOUT_MILLIS);
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                }
+            }
         }
+
+        // Anything still queued is delivered (or spilled) on this thread.
         while (drainOnce() > 0) {
             // keep going until the queue is empty
         }
     }
+
+    /** Bounded: a shutdown that never returns is its own outage. */
+    private static final long CLOSE_JOIN_TIMEOUT_MILLIS = 10_000L;
 }

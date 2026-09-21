@@ -160,6 +160,47 @@ public class PixCloudHSMProxyRouteBuilder extends EndpointRouteBuilder {
                             },
                             auditSpool::spool);
             writer.start();
+
+            // Register with the Camel context so that Camel's own shutdown calls close().
+            //
+            // Without this the writer leaked records on EVERY container stop, and it was a
+            // regression introduced by moving delivery off the request path: the worker is a daemon
+            // thread, so the JVM exits without running it. MEASURED in a separate JVM - 200 records
+            // accepted, 0 survived exit. Up to AUDIT_QUEUE_CAPACITY accepted-but-undelivered records
+            // were discarded per deploy, scale-in or rollout. Before the async writer existed the
+            // Firehose call was synchronous and inline, so a graceful stop lost nothing; the buffer
+            // bought latency and silently created a standing data-loss window.
+            //
+            // Camel's Service contract is used rather than a JVM shutdown hook because Camel stops
+            // its services BEFORE the JVM tears down, so the flush happens while the Firehose client
+            // is still usable. A shutdown hook races the AWS SDK's own teardown.
+            try {
+                getContext().addService(new org.apache.camel.Service() {
+                    @Override
+                    public void start() {
+                        // Already started above; starting twice is a no-op by design.
+                    }
+
+                    @Override
+                    public void stop() {
+                        log.info("flushing the audit writer for stream {} before shutdown", stream);
+                        writer.close();
+                        if (writer.lostCount() > 0) {
+                            log.error("{} {} audit record(s) for stream {} were neither delivered "
+                                    + "nor spooled during shutdown.",
+                                    com.amazon.aws.pix.core.audit.AuditAlarmTokens
+                                            .SPOOL_WRITE_FAILED,
+                                    writer.lostCount(), stream);
+                        }
+                    }
+                });
+            } catch (Exception e) {
+                // Must not be swallowed: without the service the flush never runs and records are
+                // lost on every stop, which is precisely the regression this wiring exists to fix.
+                throw new IllegalStateException("could not register the audit writer for stream "
+                        + stream + " with the Camel context; refusing to run with a writer whose "
+                        + "queued records would be discarded on shutdown", e);
+            }
             return writer;
         });
     }

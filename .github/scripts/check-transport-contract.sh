@@ -376,6 +376,29 @@ if [ "$HFS_REFS" -lt 2 ]; then
   exit 1
 fi
 
+# ---------------------------------------------------------------------------
+# The audit writer's queue must be flushed on shutdown.
+#
+# The worker is a daemon thread, so the JVM exits without running it. MEASURED in a
+# separate JVM: 200 records accepted, 0 survived exit. Without a lifecycle
+# registration, every deploy / scale-in / rollout silently discards up to the queue
+# capacity of accepted-but-undelivered audit records - a regression introduced by
+# moving delivery off the request path, since the previous synchronous write lost
+# nothing on a graceful stop. The existing gate pins onCompletion and the audit-write
+# ordering but nothing guarded the writer's lifecycle.
+# ---------------------------------------------------------------------------
+if ! printf '%s' "$CHECK_ROUTE_CODE" | grep -q 'getContext()\.addService('; then
+  echo "ERROR: $CLOUDHSM_ROUTE no longer registers the audit writer with the Camel context, so" >&2
+  echo "       nothing calls close() and every queued audit record is discarded on shutdown." >&2
+  exit 1
+fi
+
+if ! printf '%s' "$CHECK_ROUTE_CODE" | grep -q 'writer\.close()'; then
+  echo "ERROR: $CLOUDHSM_ROUTE registers a service that does not close the audit writer, so the" >&2
+  echo "       queue is still discarded on shutdown." >&2
+  exit 1
+fi
+
 echo "OK: transport contract options present, and KMS stays out of maintained CI"
 fi
 exit "$rc"

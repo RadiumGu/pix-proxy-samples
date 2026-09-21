@@ -40,6 +40,7 @@ Here is the whole set and what each one is *for*, so you do not have to open all
 | [`README-KMS.md`](README-KMS.md) | **Historical / unsupported.** The older AWS KMS variant, kept for reference only. | Only for historical context. It is not maintained, not in CI, and must not be used as a baseline. |
 | [`PIX_CLOUDHSM_ASSESSMENT.md`](PIX_CLOUDHSM_ASSESSMENT.md) | Verification assessment for a decision-maker: what was measured on real CloudHSM hardware, the recommended transport path and why the alternatives were eliminated, the two-HSM availability finding, and the open gates before production. | You are deciding whether and how to adopt this approach, rather than implementing it. |
 | [`VERIFICATION.md`](VERIFICATION.md) | Independent verification record: which defects were reproduced, which were fixed, what each fix was tested with, and what remains a limitation. | You want the evidence for a claim this repository makes, rather than the claim itself. |
+| [`VERIFICATION.en.md`](VERIFICATION.en.md) | The same record in English. `VERIFICATION.md` stays authoritative — correct that one. CI's `verification-parity` job fails the build if the headings, the commands or any measured value diverge between them. | You need the evidence but do not read Chinese. |
 | [`CLOUDHSM_BCB_V2_HANDOFF.md`](CLOUDHSM_BCB_V2_HANDOFF.md) · [中文](CLOUDHSM_BCB_V2_HANDOFF.zh-CN.md) | Engineering handoff: the external BCB baseline, the evidence table for the transport contract, required next work, and the **homologação gates that are explicitly NOT solved**. | You are picking this work up, or you need the honest list of what is unproven. |
 | [`CONTRIBUTING.md`](CONTRIBUTING.md) | Contribution and security-reporting process. | Reporting an issue or opening a PR. |
 | [`CODE_OF_CONDUCT.md`](CODE_OF_CONDUCT.md) | The project's code of conduct. | Participating in the project. |
@@ -268,9 +269,10 @@ already bitten: a `.gitignore` pattern once excluded a jest config, CI fell back
 could not parse TypeScript, and the job reported `Tests: 0 total` while passing locally. The alarms
 job now asserts the assertion *count* for exactly that reason.
 
-CI runs **8 jobs**: the two that execute tests (`core`, `dict-v2-contract`), two compile-only builds
+CI runs **9 jobs**: the two that execute tests (`core`, `dict-v2-contract`), two compile-only builds
 (`simulator`, `cloudhsm`), a shellcheck of the container entrypoint, the transport-contract and KMS
-scope gate, the audit-schema check, and the gating CDK alarms job.
+scope gate, the audit-schema check, the verification-parity gate that stops the two audit-trail
+copies from disagreeing, and the gating CDK alarms job.
 
 **Every contract assertion here has a negative control** — the guarded thing is removed and the
 check is confirmed to fail *for the right reason*. That habit exists because three gates in this

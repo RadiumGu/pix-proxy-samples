@@ -168,6 +168,40 @@ jobs:
       - name: Check transport contract options and scope
         run: bash .github/scripts/check-transport-contract.sh
 
+  verification-parity:
+    name: verification parity - the two audit-trail copies cannot disagree
+    runs-on: ubuntu-latest
+    # VERIFICATION.md is the authoritative audit trail and VERIFICATION.en.md is its English
+    # rendering. Keeping an audit trail in two languages doubles the places a correction has to
+    # land, and this repository has direct evidence that that fails: a qualifier about the CloudHSM
+    # key-availability quorum was stated correctly when first measured, dropped from every later
+    # summary, and ended up absent from four documents at once. The remedy is this job, not more
+    # discipline.
+    #
+    # The negative control runs here too, not only locally. A gate whose control never ran on the
+    # machine that enforces it has unverified teeth - see the alarms job, which once reported
+    # "Tests: 0 total" while appearing green because its config was gitignored.
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0 - resolved from the SHA, not from the tag I typed
+      - name: Both copies must exist
+        run: |
+          set -euo pipefail
+          test -f VERIFICATION.md
+          test -f VERIFICATION.en.md
+      - name: Parity gate
+        run: python3 .github/scripts/check-verification-parity.py
+      - name: Negative control - the gate must fail on each drift mode, for the right reason
+        run: bash .github/scripts/check-verification-parity-control.sh
+      - name: The control must leave the tree untouched
+        run: |
+          set -euo pipefail
+          if ! git diff --quiet; then
+            echo "FAIL: the negative control did not restore the files it perturbed"
+            git diff --stat
+            exit 1
+          fi
+          echo "OK: tree clean after the control"
+
   audit-schema:
     name: audit schema - AuditLog keys vs documented Glue columns
     runs-on: ubuntu-latest

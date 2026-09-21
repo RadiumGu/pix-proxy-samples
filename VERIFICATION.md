@@ -1,5 +1,17 @@
 # 验证说明 / VERIFICATION
 
+> ## 先读这一段：这份文档是什么、给谁看
+>
+> **这是一份审计轨迹，不是使用文档。** 它记录本 fork 的每一条主张是**如何被验证**的：什么被复现了、什么被实测了、什么后来发现是错的、以及什么没有修。它写给**核查这项工作的人**，不是写给使用这份代码的人。
+>
+> **如果你只是想使用或部署这个项目，你打开了错误的文件。** 请去 [`README-CloudHSM.md`](README-CloudHSM.md)——那里有架构、BCB / TLS / JDK / CloudHSM 的版本要求、部署步骤,以及如何运行各项检查。尚未证明的事项清单见 [`CLOUDHSM_BCB_V2_HANDOFF.md`](CLOUDHSM_BCB_V2_HANDOFF.md) 第 7 节。
+>
+> **两条警告，无论你怎么用这个仓库都适用：**
+> 1. **CloudHSM 这条路径无法按现状部署**——代码面向 Client SDK 3，而 `hsm1.medium` 已于 2026-03-31 终止支持，唯一可创建的实例类型需要 SDK 5.9.0+，后者需要 JDK 17+。见下方 ⚠️ 小节。
+> 2. **测试套件通过不等于 BCB homologação 通过。** 本地模拟器不是 BCB。
+>
+> **语言说明：** 本文正文为中文，因为它是作为工作记录写成的。文末 [Summary in English](#summary-in-english) 有一份英文摘要。仓库其余文档为英文，首页另有 [`README.zh-CN.md`](README.zh-CN.md) 中文版。
+
 > ## Read this first — what this document is, and who it is for
 >
 > **This is an audit trail, not user documentation.** It records how each claim this fork makes was
@@ -20,7 +32,8 @@
 >
 > **Language note:** most of this file is in Chinese, because it was written as a working record. An
 > English summary of the findings is in [Summary in English](#summary-in-english) at the end. The
-> rest of the repository's documentation is in English.
+> rest of the repository's documentation is in English, and the front page also has a Chinese
+> version at [`README.zh-CN.md`](README.zh-CN.md).
 
 
 本文档给**接收这份代码的人**：如何独立验证这个 fork 相对 AWS 官方示例做了哪些修复、以及**这些修复是真的有效**。

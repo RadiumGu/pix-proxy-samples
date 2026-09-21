@@ -39,7 +39,7 @@ AWS CloudHSM —— **维护中的教学路径** | AWS KMS —— **历史遗留
 | [`README-KMS.md`](README-KMS.md) | **历史遗留 / 不受支持。** 早期的 AWS KMS 变体,仅供参考 | 仅用于了解历史背景。它不被维护、不在 CI 中,不得作为基线 |
 | [`PIX_CLOUDHSM_ASSESSMENT.md`](PIX_CLOUDHSM_ASSESSMENT.md) | 面向决策者的验证评估:在真实 CloudHSM 硬件上测到了什么、推荐哪条传输路径及为何排除其余、双 HSM 可用性发现、以及上生产前的开放关卡 | 你在判断是否以及如何采用这套方案,而不是在实现它 |
 | [`VERIFICATION.md`](VERIFICATION.md) | 独立验证记录:复现了哪些缺陷、修了哪些、每个修复用什么测试过、哪些仍是限制 | 你想要某个主张背后的证据,而不是主张本身 |
-| [`CLOUDHSM_BCB_V2_HANDOFF.md`](CLOUDHSM_BCB_V2_HANDOFF.md) | 工程交接:外部 BCB 基线、传输契约的证据表、需要继续做的工作,以及**明确尚未解决的 homologação 关卡** | 你要接手这项工作,或需要一份诚实的「哪些尚未证明」清单 |
+| [`CLOUDHSM_BCB_V2_HANDOFF.zh-CN.md`](CLOUDHSM_BCB_V2_HANDOFF.zh-CN.md) · [English](CLOUDHSM_BCB_V2_HANDOFF.md) | 工程交接:外部 BCB 基线、传输契约的证据表、需要继续做的工作,以及**明确尚未解决的 homologação 关卡** | 你要接手这项工作,或需要一份诚实的「哪些尚未证明」清单 |
 | [`CONTRIBUTING.md`](CONTRIBUTING.md) | 贡献与安全问题上报流程 | 报告问题或提 PR |
 | [`CODE_OF_CONDUCT.md`](CODE_OF_CONDUCT.md) | 项目行为准则 | 参与本项目 |
 

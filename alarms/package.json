@@ -20,5 +20,17 @@
   "dependencies": {
     "aws-cdk-lib": "2.173.2",
     "constructs": "10.4.2"
+  },
+  "jest": {
+    "testEnvironment": "node",
+    "roots": [
+      "<rootDir>/test"
+    ],
+    "testMatch": [
+      "**/*.test.ts"
+    ],
+    "transform": {
+      "^.+\\.tsx?$": "ts-jest"
+    }
   }
 }

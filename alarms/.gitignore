@@ -1,4 +1,9 @@
+# Compiled output and local state only.
+#
+# This file previously said "*.js", which silently excluded jest.config.js from the commit.
+# CI then had no jest config, fell back to babel-jest, could not parse TypeScript, and reported
+# "Tests: 0 total" - green locally, broken in CI. The jest config now lives in package.json so
+# there is no config file left for a pattern like that to swallow.
 node_modules/
 cdk.out/
-*.js
 *.d.ts

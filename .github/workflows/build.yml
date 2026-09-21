@@ -214,9 +214,22 @@ jobs:
       # One of these tests reads AuditAlarmTokens.java and fails if the Java tokens and the
       # metric filters drift apart, because a filter matching a string nothing emits is an
       # alarm that can never fire, which looks like coverage and is worse than none.
+      # Asserts the COUNT, not the exit code. This job already failed once in a way an exit
+      # code alone would not have explained: a .gitignore pattern excluded jest.config.js, CI
+      # fell back to babel-jest, could not parse TypeScript and reported "Tests: 0 total".
+      # A config change that finds no tests must be a failure, not a quiet green.
       - name: assertions
         working-directory: alarms
-        run: npx jest --ci
+        run: |
+          set -o pipefail
+          npx jest --ci 2>&1 | tee /tmp/jest.log
+          PASSED=$(grep -oE 'Tests: +[0-9]+ passed, +[0-9]+ total' /tmp/jest.log | grep -oE '[0-9]+' | head -1)
+          echo "assertions passed: ${PASSED:-0}"
+          if [ "${PASSED:-0}" -lt 6 ]; then
+            echo "ERROR: expected at least 6 CDK assertions, got ${PASSED:-0}." >&2
+            echo "  A drop to 0 means the jest transform is not applying - see this job's history." >&2
+            exit 1
+          fi
       - name: cdk synth
         working-directory: alarms
         run: npx cdk synth --quiet

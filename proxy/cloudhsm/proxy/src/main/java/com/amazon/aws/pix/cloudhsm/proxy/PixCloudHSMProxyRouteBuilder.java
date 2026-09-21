@@ -1,6 +1,7 @@
 package com.amazon.aws.pix.cloudhsm.proxy;
 
 import com.amazon.aws.pix.cloudhsm.proxy.camel.netty.NettyHttpClientInitializerFactory;
+import com.amazon.aws.pix.cloudhsm.proxy.camel.netty.PixHttpHeaderFilterStrategy;
 import com.amazon.aws.pix.cloudhsm.proxy.camel.netty.NettySSLContextParameters;
 import com.amazon.aws.pix.cloudhsm.proxy.processor.CaptureRequestProcessor;
 import com.amazon.aws.pix.cloudhsm.proxy.processor.DecodeResponseProcessor;
@@ -167,6 +168,13 @@ public class PixCloudHSMProxyRouteBuilder extends EndpointRouteBuilder {
     private static final String CLIENT_INITIALIZER_FACTORY = "nettyHttpClientInitializerFactory";
 
     /**
+     * Registry name of the header filter that keeps BCB's caching directives. MEASURED: the stock
+     * strategy filters out cache-control, so without this a getEntry response reaches the caller
+     * with no directive bounding how long a key-ownership answer may be reused.
+     */
+    private static final String HEADER_FILTER_STRATEGY = "pixHttpHeaderFilterStrategy";
+
+    /**
      * Read-timeout bound for the BCB leg, in milliseconds. An operational safety limit rather than
      * a BCB protocol value; reconcile with the Manual de Tempos do Pix before homologação.
      */
@@ -194,6 +202,7 @@ public class PixCloudHSMProxyRouteBuilder extends EndpointRouteBuilder {
         log.info(com.amazon.aws.pix.core.net.DnsCachePolicy.apply());
 
         getContext().getRegistry().bind(CLIENT_INITIALIZER_FACTORY, new NettyHttpClientInitializerFactory());
+        getContext().getRegistry().bind(HEADER_FILTER_STRATEGY, new PixHttpHeaderFilterStrategy());
 
         configure(8080, xmlSigner, getParameter(Param.BcbDictEndpoint), getParameter(Param.DictAuditStream));
         configure(9090, iso20022XmlSigner, getParameter(Param.BcbSpiEndpoint), getParameter(Param.SpiAuditStream));
@@ -278,7 +287,11 @@ public class PixCloudHSMProxyRouteBuilder extends EndpointRouteBuilder {
     private EndpointConsumerBuilder proxyEndpoint(int port) {
         return nettyHttp(String.format("http://0.0.0.0:%d", port))
                 .matchOnUriPrefix(true)
-                .advanced().nativeTransport(true);
+                .advanced()
+                .nativeTransport(true)
+                // Both legs need it: the producer governs the response the proxy receives, the
+                // consumer governs what is written back to the caller.
+                .headerFilterStrategy("#" + HEADER_FILTER_STRATEGY);
     }
 
     private EndpointProducerBuilder bcbEndpoint(String endpoint) {
@@ -311,6 +324,10 @@ public class PixCloudHSMProxyRouteBuilder extends EndpointRouteBuilder {
                 .keepAlive(true)
                 .advanced()
                 .nativeTransport(true)
+                // Keeps Cache-Control (and Pragma/Warning) on the way back. The stock strategy
+                // filters them out; see PixHttpHeaderFilterStrategy for the measurement and for why
+                // the hop-by-hop headers stay filtered. Also lives under advanced().
+                .headerFilterStrategy("#" + HEADER_FILTER_STRATEGY)
                 // Pool options live under advanced() in camel-netty-http 3.4.2.
                 .producerPoolMaxActive(BCB_POOL_MAX_ACTIVE)
                 .producerPoolMinIdle(BCB_POOL_MIN_IDLE)

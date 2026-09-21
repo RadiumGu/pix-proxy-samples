@@ -352,6 +352,30 @@ if ! printf '%s' "$CHECK_ROUTE_CODE" | grep -q 'DnsCachePolicy\.apply()'; then
   exit 1
 fi
 
+# ---------------------------------------------------------------------------
+# BCB's caching directives must not be filtered away.
+#
+# MEASURED: camel-netty-http 3.4.2's stock NettyHttpHeaderFilterStrategy carries an
+# out-filter list containing cache-control, so a getEntry response reaches the caller
+# with NO Cache-Control while neighbouring headers such as ETag pass through. The DICT
+# API page requires clients to follow that directive, and it is the only bound on how
+# long a key-ownership answer may be reused - a stale one means paying an account that
+# no longer owns the key. Both legs must reference the custom strategy.
+# ---------------------------------------------------------------------------
+if ! printf '%s' "$CHECK_ROUTE_CODE" | grep -q 'new PixHttpHeaderFilterStrategy()'; then
+  echo "ERROR: $CLOUDHSM_ROUTE no longer binds PixHttpHeaderFilterStrategy, so BCB's" >&2
+  echo "       Cache-Control directive is filtered out of responses silently." >&2
+  exit 1
+fi
+
+HFS_REFS=$(printf '%s' "$CHECK_ROUTE_CODE" | grep -c 'headerFilterStrategy("#" + HEADER_FILTER_STRATEGY)' || true)
+if [ "$HFS_REFS" -lt 2 ]; then
+  echo "ERROR: $CLOUDHSM_ROUTE references the header filter strategy on $HFS_REFS endpoint(s); both" >&2
+  echo "       the BCB producer and the caller-facing consumer need it. The producer governs the" >&2
+  echo "       response the proxy receives, the consumer governs what is written back." >&2
+  exit 1
+fi
+
 echo "OK: transport contract options present, and KMS stays out of maintained CI"
 fi
 exit "$rc"

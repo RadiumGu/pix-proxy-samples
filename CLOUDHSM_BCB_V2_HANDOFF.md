@@ -33,7 +33,45 @@ Facts relevant to this skeleton:
 6. **Compression is expected, not exotic.** The API page recommends callers send `Accept-Encoding: gzip`; sending a compressed *request* is explicitly unsupported. Because the proxy forwards client headers transparently, BCB will answer compressed, and the body must be decoded before signature verification. Fixed 2026-09-20; see 3.2.
 7. **Connection reuse is recommended.** The API page states the mTLS handshake cost is high in latency terms, recommends an HTTP connection pool, and returns a `Keep-Alive` header carrying a `timeout`. This skeleton does not configure or document a pool — open item, not a defect of correctness.
 8. **DNS TTL must be respected.** The security manual states clients "devem sempre respeitar o TTL" of the DNS servers, warning that failing to do so can cause loss of access. This skeleton resolves configuration once at startup and has not been checked against that requirement — open item.
-9. **DICT API version moved on.** Released version is **2.12.1**; **2.13.0_rc1** is in progress. Two corrections to an earlier draft of this line, because the attribution was wrong: `PI-RequestingParticipant` → `^(?i)[a-z0-9]{8}` is **already in the released 2.12.1**, not an rc1 change — it was listed as forthcoming here, which would have led a reader to treat a current contract as speculative. And `PI-PayerId` in 2.12.1 is `^([0-9]{11}|[0-9]{14})$`, i.e. plain CPF/CNPJ digits; it is **not** a pseudonymised 64-character value (that reading came from a v1-era third-party source and is wrong for v2). The genuine **rc1** changes are `PI-PayerId` → `^([0-9]{11}|[A-Z0-9]{12}[0-9]{2})$` for the **alphanumeric CNPJ** now being introduced in Brazil, and account number → `^[A-Z0-9]{1,20}$`. None of it affects this proxy, which forwards bytes and never parses business content; `DictV2RequestPolicy` checks header *presence* only. Also of note: `getBucketState`/`listBucketStates` moved off `dict-ratelimit.pi.rsfn.net.br` in 2.6.0 and the old host now returns **HTTP 410** (`Gone`/`DeprecatedResource`, which is a documented DICT status); MED 2.0 Funds Recovery, Fraud Markers and Event Notifications endpoints exist but are out of scope per section 1.
+9. **DICT API version moved on.** Released version is **2.12.1**; **2.13.0_rc1** is in progress. Two corrections to an earlier draft of this line, because the attribution was wrong: `PI-RequestingParticipant` → `^(?i)[a-z0-9]{8}` is **already in the released 2.12.1**, not an rc1 change — it was listed as forthcoming here, which would have led a reader to treat a current contract as speculative. And `PI-PayerId` in 2.12.1 is `^([0-9]{11}|[0-9]{14})$`, i.e. plain CPF/CNPJ digits; it is **not** a pseudonymised 64-character value (that reading came from a v1-era third-party source and is wrong for v2). The genuine **rc1** changes, quoted from the changelog, are three and an earlier draft of this line
+listed only two — the omission is corrected here because it was in the one place this document claims
+special rigour:
+
+- "Alterado regex de **Participant e PI-RequestingParticipant** para permitir apenas números e letras
+  maiúsculas (`^[A-Z0-9]{8}$`)" — so rc1 *does* touch `PI-RequestingParticipant`, tightening it from
+  case-insensitive to uppercase-only. Its *current* value is still a 2.12.1 value, which is what the
+  correction above is about, but presenting the field as untouched by rc1 was wrong.
+- "Alterado regex de `PI-PayerId` e `TaxIdNumber` na parte do CNPJ … (`^([0-9]{11}|[A-Z0-9]{12}[0-9]{2})$`)"
+  for the **alphanumeric CNPJ** now being introduced in Brazil.
+- "Regex para número de conta passou apenas a permitir letras maiúsculas e números (`^[A-Z0-9]{1,20}$`)". None of it affects this proxy, which forwards bytes and never parses business content; `DictV2RequestPolicy` checks header *presence* only. Also of note: `getBucketState`/`listBucketStates` moved off `dict-ratelimit.pi.rsfn.net.br` in 2.6.0 and the old host now returns **HTTP 410** (`Gone`/`DeprecatedResource`, which is a documented DICT status); MED 2.0 Funds Recovery, Fraud Markers and Event Notifications endpoints exist but are out of scope per section 1.
+
+## 2B. Open item — `Cache-Control` on entry queries is not addressed
+
+Found by an independent fact-check of this document against the DICT API page, and it is a genuine
+gap rather than a documentation nicety. The API page states, under *Consultar Vínculo → Cache*:
+
+> "Consultas a vínculos podem ter suas respostas *cacheadas* no PSP, **devendo seguir as diretivas
+> contidas no header `Cache-Control`**. *Importante*: Para fazer uso de cache, clientes HTTP
+> geralmente precisam ser configurados. Não é comum que tenham essa funcionalidade habilitada por
+> padrão."
+
+(The page links the directive to RFC 7234 §5.2.)
+
+**Why this matters more than a normal caching concern.** A `getEntry` response says which account
+owns a Pix key. A PSP that serves a stale answer initiates a payment to an account that no longer
+owns the key — money to the wrong person. BCB's `Cache-Control` directive is the bound on that
+window, so honouring it is a correctness requirement, not a performance tweak.
+
+**What is in scope for this proxy, and what is not.** The proxy must not *interfere*: it must pass
+`Cache-Control` through unchanged so the PSP's own client can obey it, and it must not introduce
+caching of its own. Deciding whether and how the PSP caches is a business-layer decision and stays
+out of scope per section 1.
+
+Status: **untested**. The transparent-proxy contract tests assert path, query, repeated query,
+headers and body, but nothing asserts that a *response* header such as `Cache-Control` survives the
+proxy — and the response leg is where this document has already found two defects (the gzip decode
+and the missing decoded-length header handling). A test is warranted and is recorded here rather
+than assumed.
 
 ## 2A. Homologação gate — BCB certificate revocation checking
 

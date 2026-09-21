@@ -16,12 +16,12 @@ jobs:
     name: core - build + test (the signature logic)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4 (v4.3.1)
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0 - resolved from the SHA, not from the tag I typed
 
       # JDK 11 on purpose: proxy/pom.xml sets java.version=11, and proxy/core/pom.xml
       # relies on --add-exports against two java.xml.crypto internal packages. Changing
       # the JDK major version here would not be testing what this project actually ships.
-      - uses: actions/setup-java@cf277c60eb25467037889841efdb72551f06f6c3 # v4 (v4.7.1)
+      - uses: actions/setup-java@cf277c60eb25467037889841efdb72551f06f6c3 # v4.9.1 - resolved from the SHA, not from the tag I typed
         with:
           distribution: temurin
           java-version: '11'
@@ -32,7 +32,7 @@ jobs:
 
       - name: Upload surefire reports
         if: always()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4 (v4.6.2)
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2 - verified
         with:
           name: surefire-core
           path: proxy/core/target/surefire-reports/
@@ -42,8 +42,8 @@ jobs:
     name: CloudHSM simulator - compile
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4 (v4.3.1)
-      - uses: actions/setup-java@cf277c60eb25467037889841efdb72551f06f6c3 # v4 (v4.7.1)
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0 - resolved from the SHA, not from the tag I typed
+      - uses: actions/setup-java@cf277c60eb25467037889841efdb72551f06f6c3 # v4.9.1 - resolved from the SHA, not from the tag I typed
         with:
           distribution: temurin
           java-version: '11'
@@ -66,8 +66,8 @@ jobs:
     # camel-netty-http over plain loopback HTTP. That also keeps it off the external
     # rpm download the cloudhsm job depends on, so this gate cannot go red for unrelated reasons.
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4 (v4.3.1)
-      - uses: actions/setup-java@cf277c60eb25467037889841efdb72551f06f6c3 # v4 (v4.7.1)
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0 - resolved from the SHA, not from the tag I typed
+      - uses: actions/setup-java@cf277c60eb25467037889841efdb72551f06f6c3 # v4.9.1 - resolved from the SHA, not from the tag I typed
         with:
           distribution: temurin
           java-version: '11'
@@ -78,7 +78,7 @@ jobs:
 
       - name: Upload surefire reports
         if: always()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4 (v4.6.2)
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2 - verified
         with:
           name: surefire-dict-v2-contract
           path: |
@@ -103,38 +103,48 @@ jobs:
     # skipped rather than failed when the prerequisite could not be fetched - with a warning
     # so a skipped gate is never mistaken for a passed one.
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4 (v4.3.1)
-      - uses: actions/setup-java@cf277c60eb25467037889841efdb72551f06f6c3 # v4 (v4.7.1)
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0 - resolved from the SHA, not from the tag I typed
+      - uses: actions/setup-java@cf277c60eb25467037889841efdb72551f06f6c3 # v4.9.1 - resolved from the SHA, not from the tag I typed
         with:
           distribution: temurin
           java-version: '11'
           cache: maven
       - name: Install rpm tooling (required by rpm-maven-plugin)
         run: sudo apt-get update && sudo apt-get install -y rpm
-      - name: Fetch and install the SDK 3 JCE jar (external download - best effort)
+      # Three steps, not two, and the split is the point.
+      #
+      # An earlier version folded our own build into the best-effort step: it ran
+      # `-pl .,core,cloudhsm/cavium`, so the aggregator pom install, the core compile
+      # AND the rpm pin verification all sat behind continue-on-error. That meant an
+      # OUR-FAULT error - bumping cloudhsm.sdk3.rpm.version without its matching
+      # sha256, say - failed the step, skipped the production gate, and left the job
+      # green with only a warning. The commit that added it described every failure
+      # there as "the rpm could not be fetched", which was not true.
+      #
+      # Now only the genuinely external work is advisory.
+      - name: Install the aggregator pom and core - THIS GATES
+        run: mvn -B -f proxy/pom.xml -pl .,core install -DskipTests
+      - name: Fetch and install the SDK 3 JCE jar from S3 (external - best effort)
         id: sdk3
         continue-on-error: true
-        # The leading "." installs the aggregator pom com.amazon.aws:pix itself. Without it the
-        # next step fails with "Could not find artifact com.amazon.aws:pix:pom:1.0.0", because
-        # -pl cloudhsm/proxy resolves its parent from the local repository rather than from the
-        # reactor. That is invisible on a developer machine whose ~/.m2 already holds the parent
-        # from an earlier full build, and it is exactly what broke the first version of this job.
-        run: mvn -B -f proxy/pom.xml -pl .,core,cloudhsm/cavium install -DskipTests
+        run: mvn -B -f proxy/pom.xml -pl cloudhsm/cavium install -DskipTests
       - name: Compile proxy/cloudhsm/proxy - THIS GATES
         if: steps.sdk3.outcome == 'success'
         run: mvn -B -f proxy/pom.xml -pl cloudhsm/proxy package -DskipTests
       - name: Say plainly that the gate was skipped, not passed
         if: steps.sdk3.outcome != 'success'
         run: |
-          echo "::warning::The SDK 3 JCE rpm could not be fetched, so the proxy/cloudhsm/proxy"
-          echo "::warning::compile gate was SKIPPED - it did not pass. SDK 3 is end-of-life and"
-          echo "::warning::its download links are withdrawn over time; see the pin in proxy/pom.xml."
+          echo "::warning::The SDK 3 JCE rpm could not be fetched from S3, so the"
+          echo "::warning::proxy/cloudhsm/proxy compile gate was SKIPPED - it did not pass."
+          echo "::warning::SDK 3 is end-of-life and its download links are withdrawn over time;"
+          echo "::warning::see the pin in proxy/pom.xml. Note this step no longer covers our own"
+          echo "::warning::build - the aggregator and core are gated separately above."
 
   shell:
     name: wrapper_script.sh - shellcheck
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4 (v4.3.1)
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0 - resolved from the SHA, not from the tag I typed
       - name: Syntax check
         run: |
           bash -n proxy/cloudhsm/proxy/src/main/docker/wrapper_script.sh
@@ -154,7 +164,7 @@ jobs:
     # keeps production declaring them. It also guards the CloudHSM-only scope by failing if KMS
     # re-enters the maintained workflow.
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4 (v4.3.1)
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0 - resolved from the SHA, not from the tag I typed
       - name: Check transport contract options and scope
         run: bash .github/scripts/check-transport-contract.sh
 
@@ -164,7 +174,7 @@ jobs:
     # Turns upstream issue #16 into a build failure instead of silent data loss:
     # any field AuditLog emits must be declared as a column in both READMEs.
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4 (v4.3.1)
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0 - resolved from the SHA, not from the tag I typed
       - name: Compare emitted keys against documented columns
         run: |
           set -euo pipefail

@@ -289,8 +289,57 @@ public class PixCloudHSMProxyRouteBuilder extends EndpointRouteBuilder {
      * depends on. A future refinement would probe both signers separately and report which one is
      * broken; today a single verdict is what the endpoint can express.
      */
+    /**
+     * The mTLS client private key handle, kept so {@code /check} can verify it is still usable.
+     *
+     * <p>It is fetched once in {@link #createSslContext()} and handed to the SSL context, so nothing
+     * revisits it for the container's whole life. If its HSM session dies, every BCB handshake fails
+     * while signing continues to work - and {@code /check} used to answer 200 throughout, so no load
+     * balancer had any reason to replace the container.
+     */
+    private volatile PrivateKey mtlsClientKey;
+
     private final com.amazon.aws.pix.core.health.HsmHealthProbe hsmHealthProbe =
-            new com.amazon.aws.pix.core.health.HsmHealthProbe(() -> xmlSigner.sign(HEALTH_CANARY));
+            new com.amazon.aws.pix.core.health.HsmHealthProbe(() -> xmlSigner.sign(HEALTH_CANARY))
+                    .add("mtls-client-key", this::probeMtlsClientKey);
+
+    /**
+     * Exercises the mTLS client key with the same private-key operation the TLS handshake performs.
+     *
+     * <p>A TLS client proves possession of its key by signing the handshake transcript in
+     * CertificateVerify, so signing a canary is the same class of operation against the same handle -
+     * it fails for the same reasons a handshake would, without opening a connection to BCB.
+     *
+     * <p>Before the context exists there is nothing to probe and the container is not yet serving, so
+     * that state is healthy rather than a failure. An explicitly null handle after startup IS a
+     * failure: it means the key was never obtained.
+     */
+    private void probeMtlsClientKey() throws Exception {
+        final PrivateKey key = this.mtlsClientKey;
+        if (key == null) {
+            if (!sslContextCreated) {
+                return;
+            }
+            throw new IllegalStateException("the mTLS client key was never obtained from the HSM, so "
+                    + "no handshake with BCB can succeed");
+        }
+        // The provider comes from the keystore the key was loaded from, not from a hardcoded name.
+        // SDK 3 registers "Cavium" and SDK 5 registers "CloudHSM", so naming one would break on the
+        // other; and plain getInstance() without a provider would resolve to SunRsaSign, which
+        // rejects an unextractable HSM key with InvalidKeyException - a probe failing for the wrong
+        // reason, reporting a dead credential when the credential is fine.
+        final java.security.Signature signature =
+                java.security.Signature.getInstance("SHA256withRSA", cloudHsmKeyStore.getProvider());
+        signature.initSign(key);
+        signature.update(HEALTH_CANARY.getBytes(java.nio.charset.StandardCharsets.UTF_8));
+        final byte[] produced = signature.sign();
+        if (produced == null || produced.length == 0) {
+            throw new IllegalStateException("the mTLS client key produced an empty signature");
+        }
+    }
+
+    /** Set once the SSL context has been built, so a null key before startup is not a failure. */
+    private volatile boolean sslContextCreated;
 
     private void configure(int port, XmlSigner xmlSigner, String endpoint, String streamName) {
         from(proxyEndpoint(port))
@@ -464,13 +513,17 @@ public class PixCloudHSMProxyRouteBuilder extends EndpointRouteBuilder {
             Boolean.parseBoolean(System.getProperty("pix.tls.revocation.softfail", "true"));
 
     private void createSslContext() throws Exception {
-        PrivateKey signatureKey = (PrivateKey) cloudHsmKeyStore.getKey(getParameter(Param.MtlsKeyLabel), null);
+        // Named for what it is. It was called signatureKey, which is the PSP document-signing
+        // credential - a different key with different failure modes - and that name is precisely
+        // why /check probing "the signing key" looked like it covered mTLS when it did not.
+        PrivateKey mtlsClientKey = (PrivateKey) cloudHsmKeyStore.getKey(getParameter(Param.MtlsKeyLabel), null);
+        this.mtlsClientKey = mtlsClientKey;
         Collection<X509Certificate> certificates = KeyStoreUtil.getCertificates(getParameter(Param.MtlsCertificate));
         Collection<X509Certificate> trustCertificates = KeyStoreUtil.getCertificates(getParameter(Param.BcbMtlsCertificate));
 
         SslContextBuilder builder = SslContextBuilder.forClient()
                 .sslProvider(SslProvider.OPENSSL)
-                .keyManager(signatureKey, certificates)
+                .keyManager(mtlsClientKey, certificates)
                 // Must match the endpoint's enabledProtocols. The custom initializer applies
                 // enabledProtocols ONLY when sslContextParameters is null, and here it is not, so
                 // whatever is pinned on THIS builder is what the handshake offers. Leaving
@@ -494,6 +547,10 @@ public class PixCloudHSMProxyRouteBuilder extends EndpointRouteBuilder {
         }
 
         sslContext = builder.build();
+
+        // Marks startup complete, so probeMtlsClientKey() can tell "not yet started"
+        // (healthy) from "the key was never obtained" (a real failure).
+        this.sslContextCreated = true;
     }
 
     private void createXmlSigners() throws UnrecoverableKeyException, NoSuchAlgorithmException, KeyStoreException {

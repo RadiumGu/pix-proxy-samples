@@ -428,6 +428,27 @@ if ! grep -qF -- '-Dsun.net.inetaddr.ttl=' proxy/cloudhsm/proxy/src/main/docker/
   exit 1
 fi
 
+# /check must probe the mTLS client key, not only the document signer. That key is fetched
+# once at startup and handed to the SSL context, so a dead HSM session for it fails every BCB
+# handshake while signing still works - and /check answered 200 throughout, giving the load
+# balancer no reason to replace the container.
+#
+# Matches the REGISTRATION CALL, not the string "mtls". Three gates in this repository have
+# passed while the guarded thing was gone, because a name fragment matched a renamed symbol.
+if ! grep -qF '.add("mtls-client-key", this::probeMtlsClientKey)' "$CLOUDHSM_ROUTE"; then
+    echo "ERROR: $CLOUDHSM_ROUTE no longer registers the mTLS client key with the health probe." >&2
+    echo "  /check would report healthy while every BCB handshake fails." >&2
+    exit 1
+fi
+
+# The probe has to perform a real private-key operation. An empty or stubbed body would satisfy
+# the registration check above while proving nothing about the key.
+if ! grep -qF 'signature.initSign(key)' "$CLOUDHSM_ROUTE"; then
+    echo "ERROR: $CLOUDHSM_ROUTE probeMtlsClientKey no longer signs with the mTLS key." >&2
+    echo "  Registration without a real private-key operation is a probe that cannot fail." >&2
+    exit 1
+fi
+
 echo "OK: transport contract options present, and KMS stays out of maintained CI"
 fi
 exit "$rc"

@@ -40,7 +40,18 @@ public class HsmHealthProbe {
         void run() throws Exception;
     }
 
-    private final Probe probe;
+    /** One probe plus the credential name to report when it is the one that failed. */
+    private static final class NamedProbe {
+        private final String name;
+        private final Probe probe;
+
+        private NamedProbe(final String name, final Probe probe) {
+            this.name = name;
+            this.probe = probe;
+        }
+    }
+
+    private final java.util.List<NamedProbe> probes = new java.util.ArrayList<>();
     private final long ttlMillis;
     private final Clock clock;
 
@@ -61,9 +72,46 @@ public class HsmHealthProbe {
         if (probe == null || ttl == null || clock == null) {
             throw new IllegalArgumentException("probe, ttl and clock are all required");
         }
-        this.probe = probe;
+        this.probes.add(new NamedProbe("signing-key", probe));
         this.ttlMillis = ttl.toMillis();
         this.clock = clock;
+    }
+
+    /**
+     * Registers an additional credential this container needs in order to serve Pix traffic.
+     *
+     * <p>Added because {@code /check} probed the signing key only, which left the mTLS client key
+     * unverified — and that key is what every BCB handshake depends on. It is fetched ONCE at
+     * startup and handed to the SSL context, so if its HSM session later dies, every request to BCB
+     * fails at the handshake while {@code /check} keeps answering 200 because signing still works.
+     * A load balancer has no reason to replace the container, and the outage persists.
+     *
+     * <p>Probes run in registration order and the first failure decides the verdict, naming the
+     * credential that broke. All of them must pass for the container to be healthy: a container that
+     * can sign but cannot complete mTLS is no more useful than one that can do neither.
+     *
+     * @param name  the credential name to report, for example {@code mtls-client-key}
+     * @param probe an operation that fails if that credential is unusable
+     */
+    public HsmHealthProbe add(final String name, final Probe probe) {
+        if (name == null || name.trim().isEmpty() || probe == null) {
+            throw new IllegalArgumentException("name and probe are both required");
+        }
+        probes.add(new NamedProbe(name, probe));
+        // Any registration invalidates a cached verdict, so a newly added credential cannot be
+        // skipped for up to a TTL by an answer computed before it existed.
+        cached.set(null);
+        return this;
+    }
+
+    /** The credential names probed, in order. Lets a test assert WHAT is covered, not just that
+     * something is. */
+    public java.util.List<String> probedCredentials() {
+        final java.util.List<String> names = new java.util.ArrayList<>();
+        for (final NamedProbe p : probes) {
+            names.add(p.name);
+        }
+        return names;
     }
 
     /** The outcome of a probe: healthy, or unhealthy with the reason to report. */
@@ -100,17 +148,24 @@ public class HsmHealthProbe {
             return previous;
         }
 
-        Result fresh;
-        try {
-            probeCount.incrementAndGet();
-            probe.run();
-            fresh = new Result(true, "HSM signing operation succeeded");
-        } catch (Throwable t) {
-            // Throwable, not Exception: a dead JCE provider can surface as an Error - a
-            // NoClassDefFoundError or UnsatisfiedLinkError from the native layer - and that is
-            // still an unhealthy container rather than something to propagate.
-            fresh = new Result(false, "HSM signing operation FAILED: "
-                    + t.getClass().getName() + ": " + t.getMessage());
+        Result fresh = new Result(true,
+                "HSM credential checks succeeded for " + probedCredentials());
+        for (final NamedProbe named : probes) {
+            try {
+                probeCount.incrementAndGet();
+                named.probe.run();
+            } catch (Throwable t) {
+                // Throwable, not Exception: a dead JCE provider can surface as an Error - a
+                // NoClassDefFoundError or UnsatisfiedLinkError from the native layer - and that is
+                // still an unhealthy container rather than something to propagate.
+                //
+                // The credential name is in the message because "signing failed" sent an operator
+                // to the wrong key: the signing key and the mTLS key are different objects with
+                // different failure modes, and only one of them breaks the BCB handshake.
+                fresh = new Result(false, "HSM credential '" + named.name + "' is UNUSABLE: "
+                        + t.getClass().getName() + ": " + t.getMessage());
+                break;
+            }
         }
 
         cached.set(fresh);

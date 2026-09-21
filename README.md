@@ -173,11 +173,35 @@ hardware:
 |---|---|---|---|---|
 | **A** | 3 | enabled (default) | Signing continues — two remain | follows from the quorum rule |
 | **B** | 2 | disabled | **Signing continues** at full speed | 5/5 signatures, 0.38–0.46 s |
-| **C** | 2 | enabled (default) | **Total signing outage** (see caveat) | 3/3 failures, 87.2 s each |
+| **C** | 2 | enabled (default) | Fresh-process clients fail; a running session keeps signing until it restarts | 3/3 CLI failures at 87.2 s; 279/279 JVM signatures OK |
 
-> **What the configuration-C measurement does and does not establish.** Every measurement used `cloudhsm-cli`, which starts a **fresh process** per invocation. AWS's troubleshooting page for this error lists *"a new instance of the SDK was started"* among the operations that trigger it, alongside key generation and `key list` — so these measurements **cannot separate** the quorum blocking the sign operation itself from the quorum firing at SDK startup. The proxy holds a long-lived JVM session with an already-resolved key handle, and **whether that keeps signing after one HSM of two is lost is NOT established here.** The durability documentation says "create **or use**" a token key fails, which points one way; the troubleshooting page's trigger list does not mention signing with an open handle, which points the other. Treat "total signing outage" as measured for short-lived clients and unproven for a long-lived one.
-
-AWS's own troubleshooting guidance for this error reaches the same sizing conclusion independently: its listed resolutions are to disable the check, to avoid the triggering operations outside initialisation code on a two-HSM cluster, or to *"increase the amount of HSMs in your cluster to at least three"*.
+> **MEASURED: a long-lived JVM session is NOT interrupted, and this falsifies the row above for
+> production.** A purpose-built 2-HSM cluster, quorum at its **default (enabled)**, key generated
+> while healthy (`cluster-coverage: full`, `never-extractable: true`). A JVM installed the CloudHSM
+> JCE provider once, loaded the keystore once, and resolved the `PrivateKey` handle once — then
+> signed in a loop. One HSM was deleted mid-run. Result: **279 signatures, 0 failures**, continuing
+> for **475 seconds** after the deletion, at **1.9–2.2 ms** each throughout.
+>
+> So the quorum is enforced when a client **establishes** its session and when keys are created or
+> listed — not on every private-key operation against an already-resolved handle. AWS's
+> troubleshooting page points the same way: it lists key generation, `key list`, and *"a new
+> instance of the SDK was started"* as the triggers, and notes that *"OpenSSL frequently forks new
+> instances of the SDK"*.
+>
+> **Why the earlier measurement said otherwise.** Every configuration-C failure was measured with
+> `cloudhsm-cli`, which starts a **fresh process per invocation** — so each attempt was a new SDK
+> instance, which is itself a trigger. The 87.2 s failures are real and they are what a
+> fresh-process client sees; they are **not** what a long-lived proxy sees.
+>
+> **What this changes, and what it does not.** Configuration C is not the instant total outage
+> stated above: a running proxy keeps signing on one surviving HSM. It is still the configuration
+> to avoid, for reasons that remain measured — a **restart** during the degraded window cannot
+> re-establish a session, so any deploy, crash, scale-out or container replacement turns the
+> degradation into an outage, and key creation and rotation fail throughout. Sizing for three HSMs
+> is still AWS's own documented recommendation. The difference is that the failure is
+> **restart-triggered rather than immediate**, which changes the incident shape from "Pix stops
+> now" to "Pix stops at the next restart" — and the second is easy to mistake for having survived
+> the failure.
 
 **Configuration C costs exactly what B costs and is strictly worse.** It is also the shape you get
 by following the obvious path, so it is the one to avoid. The failure is slow rather than fast —

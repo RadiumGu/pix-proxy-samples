@@ -27,19 +27,34 @@
           Security overrides. quarkus-bom 1.7.0.Final pulls Netty 4.1.49.Final and
           jackson-databind 2.11.2, both of which carry advisories that matter here:
 
-            Netty 4.1.49 / CVE-2021-43797 - netty-codec-http does not reject a header
-            name containing a control character, so a downstream server can be made to
-            see a request boundary the upstream one did not. This proxy forwards
-            attacker-influenced headers to the BCB, which is exactly the shape of
-            deployment the advisory is about. Fixed in 4.1.71.Final.
+            Netty / request smuggling, CWE-444, TWICE. 4.1.49 carries CVE-2021-43797
+            (netty-codec-http accepts a header name containing a control character, so a
+            downstream server can be made to see a request boundary the upstream one did
+            not; fixed in 4.1.71.Final). An independent review then caught that pinning
+            to 4.1.118 - the first fix attempted here - left CVE-2025-58056 open, which
+            is smuggling of the SAME class via chunk-extension parsing and is fixed only
+            in 4.1.125.Final. Closing one and leaving its equivalent open is not a fix,
+            so the pin now sits past every netty-codec-http advisory currently published,
+            verified against the GitHub advisory API rather than by picking a recent
+            number. CVE-2025-58057 (netty-codec DoS) is covered by the same move.
 
-            jackson-databind 2.11.2 / CVE-2020-25649 - the XML factory does not disable
-            external entity resolution, an XXE exposure in a process that also handles
-            signed XML. Fixed in 2.11.4.
+            This repository is a proxy forwarding attacker-influenced HTTP/1.1 to the
+            BCB, which is precisely the deployment shape those advisories describe, so
+            "low severity" ratings understate the relevance here.
 
-          Both are pinned well past the fix so the later advisories in each line are
-          covered too, and netty-tcnative moves with Netty because the two are released
-          as a matched pair.
+            jackson-databind 2.11.2 - the rationale previously given was WRONG and is
+            corrected rather than quietly dropped. It cited CVE-2020-25649 as "an XXE
+            exposure in a process that also handles signed XML", but that advisory
+            enumerates [2.6.0,2.6.7.4), [2.7.0.0,2.9.10.7) and [2.10.0.0,2.10.5.1) - no
+            2.11.x range - and its vector is the XML dataformat, while
+            jackson-dataformat-xml is not on this classpath at all and the signed-XML
+            path uses javax.xml.crypto. The pin is still correct and still worth having:
+            it clears the real 2.x databind deserialization CVEs such as
+            CVE-2022-42003 / CVE-2022-42004, fixed in 2.13.4.x. The defect was the
+            justification, not the remediation.
+
+          netty-tcnative moves with Netty because the two are released as a matched pair;
+          the version below is the one netty-parent itself declares.
 
           These BOM imports are deliberately declared BEFORE quarkus-bom: for imported
           BOMs Maven takes the FIRST declaration that manages an artifact, so putting
@@ -47,8 +62,8 @@
           override would silently do nothing. Verified with `dependency:list`, not by
           assuming - see README-CloudHSM.md.
         -->
-        <netty.version>4.1.118.Final</netty.version>
-        <netty-tcnative.version>2.0.70.Final</netty-tcnative.version>
+        <netty.version>4.1.138.Final</netty.version>
+        <netty-tcnative.version>2.0.84.Final</netty-tcnative.version>
         <jackson.version>2.15.4</jackson.version>
 
         <!--

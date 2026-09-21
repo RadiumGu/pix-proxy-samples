@@ -85,6 +85,38 @@
             <artifactId>camel-direct</artifactId>
             <scope>test</scope>
         </dependency>
+
+        <!--
+          Test scope only. Brings in core's committed certificate fixtures (security/client.jks and
+          friends) so the Netty TLS tests here can use the SAME fixtures the core tests use, rather
+          than a duplicated copy. proxy/test had no test resources of its own, which is why the first
+          version of NettyHostnameVerificationTest failed: the keystore was simply not on this
+          module's classpath, so the fixture server had no usable key and answered handshake_failure -
+          which looked like a TLS defect and was a classpath problem.
+        -->
+        <dependency>
+            <groupId>com.amazon.aws</groupId>
+            <artifactId>pix-core</artifactId>
+            <version>1.0.0</version>
+            <type>test-jar</type>
+            <scope>test</scope>
+        </dependency>
+
+        <!--
+          Test scope only, and it is what makes the TLS tests cover the provider production actually
+          uses. The production module pins netty-tcnative with the linux-x86_64-fedora classifier, so
+          OpenSsl.isAvailable() is false anywhere else - including an aarch64 build host - and the
+          Netty TLS test would silently fall back to SslProvider.JDK while appearing to cover OpenSSL.
+          The boringssl-static artifact bundles natives for several architectures, so the same engine
+          code production runs (ReferenceCountedOpenSslEngine) is exercised here. Version comes from
+          the parent's netty-tcnative pin; nothing in src/main gains a dependency.
+        -->
+        <dependency>
+            <groupId>io.netty</groupId>
+            <artifactId>netty-tcnative-boringssl-static</artifactId>
+            <version>${netty-tcnative.version}</version>
+            <scope>test</scope>
+        </dependency>
     </dependencies>
 
     <build>

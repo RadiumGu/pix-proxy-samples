@@ -23,7 +23,7 @@ import org.slf4j.LoggerFactory;
 
 import javax.net.ssl.SNIHostName;
 import javax.net.ssl.SSLEngine;
-import javax.net.ssl.SSLParameters;
+import com.amazon.aws.pix.core.tls.PixTlsEngineConfigurer;
 import java.net.URI;
 import java.util.Arrays;
 import java.util.List;
@@ -135,25 +135,22 @@ public class NettyHttpClientInitializerFactory extends ClientInitializerFactory 
         } else if (sslContext != null) {
             URI uri = new URI(producer.getEndpoint().getEndpointUri());
             SSLEngine engine = sslContext.newEngine(channel.alloc(), uri.getHost(), uri.getPort());
-            engine.setUseClientMode(true);
-            SSLParameters sslParameters = engine.getSSLParameters();
-            sslParameters.setServerNames(Arrays.asList(new SNIHostName(uri.getHost())));
 
-            // Verify that the server certificate actually belongs to the host we dialled.
+            // SNI plus hostname verification, in shared code rather than inline here.
             //
-            // Without this, JSSE validates the chain but never compares the certificate's
-            // subject / SAN against the hostname, so any certificate the trust store accepts
-            // is accepted for ANY host. Setting SNI does not help: SNI tells the server which
-            // name we want, it does not check what the server sends back.
+            // It was inline, and an independent review showed what that cost: deleting the
+            // hostname-verification line left the entire test suite green, because no test could
+            // reach this method. Only a CI text-grep guarded it. PixTlsEngineConfigurer lives in
+            // proxy/core, which is the module CI actually runs tests in - proxy/cloudhsm is built
+            // with -DskipTests - so the behaviour is now executed by tests, including a real Netty
+            // channel handshake, instead of merely asserted to be present.
             //
-            // The pinned trust anchor already limits the damage today, because only one exact
-            // leaf certificate is trusted. That mitigation disappears the moment the anchor
-            // becomes a CA - which is the direction revocation checking pushes it - and at
-            // that point every certificate that CA ever issued would be accepted for the BCB
-            // endpoint. "HTTPS" is the standard algorithm name and applies RFC 2818 matching.
-            sslParameters.setEndpointIdentificationAlgorithm("HTTPS");
-
-            engine.setSSLParameters(sslParameters);
+            // Why both settings matter: SNI is a REQUEST naming the host we want; endpoint
+            // identification is the CHECK comparing the presented certificate against the host we
+            // dialled. With SNI alone, JSSE validates the chain and then accepts it for ANY host.
+            // Exact-leaf pinning limits that today, but the mitigation disappears as soon as the
+            // anchor becomes a CA - the direction revocation checking pushes it.
+            PixTlsEngineConfigurer.configureClient(engine, uri.getHost());
             if (producer.getConfiguration().getSslContextParameters() == null) {
                 // just set the enabledProtocols if the SslContextParameter doesn't set
                 engine.setEnabledProtocols(producer.getConfiguration().getEnabledProtocols().split(","));

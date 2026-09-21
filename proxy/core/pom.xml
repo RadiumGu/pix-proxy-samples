@@ -45,6 +45,25 @@
 
 	<build>
 		<plugins>
+            <!--
+              Publishes the test classes and test RESOURCES as a test-jar so proxy/test can reuse the
+              committed certificate fixtures. The alternative was copying security/client.jks into a
+              second module, which would give the repository two sources of truth for a fixture that
+              WellKnownTestCertificatesTest fingerprints by design.
+            -->
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-jar-plugin</artifactId>
+                <version>3.2.0</version>
+                <executions>
+                    <execution>
+                        <id>publish-test-jar</id>
+                        <goals>
+                            <goal>test-jar</goal>
+                        </goals>
+                    </execution>
+                </executions>
+            </plugin>
 			<plugin>
 				<artifactId>maven-compiler-plugin</artifactId>
 				<configuration>

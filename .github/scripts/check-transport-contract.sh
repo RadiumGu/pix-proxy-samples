@@ -202,7 +202,10 @@ fi
 # ---------------------------------------------------------------------------
 CLIENT_FACTORY=proxy/cloudhsm/proxy/src/main/java/com/amazon/aws/pix/cloudhsm/proxy/camel/netty/NettyHttpClientInitializerFactory.java
 
-if ! grep -qF 'setEndpointIdentificationAlgorithm("HTTPS")' "$CLIENT_FACTORY"; then
+# Matches the CALL to the shared configurer, not a string inside it. The behaviour itself
+# is now executed by NettyHostnameVerificationTest through a real Netty handshake; this
+# assertion only has to catch the factory ceasing to call it.
+if ! grep -qF 'PixTlsEngineConfigurer.configureClient(engine, uri.getHost())' "$CLIENT_FACTORY"; then
   echo "ERROR: $CLIENT_FACTORY no longer enables hostname verification." >&2
   echo "       setSSLParameters with an SNI name alone does NOT check the server certificate" >&2
   echo "       against the host that was dialled. See TlsHostnameVerificationTest, whose" >&2

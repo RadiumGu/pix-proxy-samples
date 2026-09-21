@@ -99,11 +99,16 @@ continuously, and the HSM was then restored. The result contradicts the intuitiv
 | Condition | Signing | Latency |
 |---|---|---|
 | 2 HSMs, key-availability check enabled | **Succeeds** | 0.39–0.52 s (MEASURED) |
-| 1 HSM (one deleted), check enabled | **Fails entirely** | 87.2 s before erroring (MEASURED ×3, spread 0.04 s) |
+| 1 HSM (one deleted), check enabled | **Fails entirely** for a fresh-process client; unproven for a long-lived session | 87.2 s before erroring (MEASURED ×3, spread 0.04 s) |
 | 2nd HSM restored | **Recovers automatically** | 0.45 s (MEASURED) |
 
 The error is explicit: `Cannot perform the requested key operation as the key must be
 available on at least 2 HSMs`.
+
+> **What the configuration-C measurement does and does not establish.** Every measurement used `cloudhsm-cli`, which starts a **fresh process** per invocation. AWS's troubleshooting page for this error lists *"a new instance of the SDK was started"* among the operations that trigger it, alongside key generation and `key list` — so these measurements **cannot separate** the quorum blocking the sign operation itself from the quorum firing at SDK startup. The proxy holds a long-lived JVM session with an already-resolved key handle, and **whether that keeps signing after one HSM of two is lost is NOT established here.** The durability documentation says "create **or use**" a token key fails, which points one way; the troubleshooting page's trigger list does not mention signing with an open handle, which points the other. Treat "total signing outage" as measured for short-lived clients and unproven for a long-lived one.
+
+AWS's own troubleshooting guidance for this error reaches the same sizing conclusion independently: its listed resolutions are to disable the check, to avoid the triggering operations outside initialisation code on a two-HSM cluster, or to *"increase the amount of HSMs in your cluster to at least three"*.
+
 
 **So two HSMs is not a redundant configuration — it is the minimum at which the check passes.**
 Losing one drops the cluster below quorum and signing stops completely. To tolerate the loss

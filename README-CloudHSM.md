@@ -259,7 +259,11 @@ That produces three configurations, and one of them should never ship:
 |---|---|---|---|---|
 | **A** | 3 | enabled (default) | Signing continues — two remain | inferred from the quorum rule |
 | **B** | 2 | disabled | **Signing continues** at full speed | MEASURED 5/5 OK, 0.38–0.46 s |
-| **C** | 2 | enabled (default) | **Total signing outage** | MEASURED 3/3 fail, 87.2 s each |
+| **C** | 2 | enabled (default) | **Total signing outage** for short-lived clients (see below) | MEASURED 3/3 fail, 87.2 s each |
+
+> **What the configuration-C measurement does and does not establish.** Every measurement used `cloudhsm-cli`, which starts a **fresh process** per invocation. AWS's troubleshooting page for this error lists *"a new instance of the SDK was started"* among the operations that trigger it, alongside key generation and `key list` — so these measurements **cannot separate** the quorum blocking the sign operation itself from the quorum firing at SDK startup. The proxy holds a long-lived JVM session with an already-resolved key handle, and **whether that keeps signing after one HSM of two is lost is NOT established here.** The durability documentation says "create **or use**" a token key fails, which points one way; the troubleshooting page's trigger list does not mention signing with an open handle, which points the other. Treat "total signing outage" as measured for short-lived clients and unproven for a long-lived one.
+
+AWS's own troubleshooting guidance for this error reaches the same sizing conclusion independently: its listed resolutions are to disable the check, to avoid the triggering operations outside initialisation code on a two-HSM cluster, or to *"increase the amount of HSMs in your cluster to at least three"*.
 
 **Configuration C is strictly dominated.** It costs exactly what B costs and loses all signing
 capability when one HSM goes away. Two HSMs with the default quorum is the shape you get by

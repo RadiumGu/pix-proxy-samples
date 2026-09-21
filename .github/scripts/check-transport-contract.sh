@@ -410,6 +410,18 @@ if ! grep -q 'mustReject(contentEncoding, body)' \
   exit 1
 fi
 
+# The DNS TTL bound must come from the LAUNCH, not from application code. Measured: the
+# JDK reads networkaddress.cache.ttl once, in a static initializer, and the proxy
+# resolves names during @PostConstruct (SSM, Secrets Manager, Firehose) before Camel
+# configures its routes - so a Security.setProperty call from the route builder sets the
+# property and changes nothing while logging success.
+if ! grep -q 'sun.net.inetaddr.ttl' proxy/cloudhsm/proxy/src/main/docker/wrapper_script.sh; then
+  echo "ERROR: wrapper_script.sh no longer sets -Dsun.net.inetaddr.ttl, so the JVM keeps its" >&2
+  echo "       default DNS cache (30s, or FOREVER under a security manager) regardless of what" >&2
+  echo "       DnsCachePolicy.apply() reports. See CLOUDHSM_BCB_V2_HANDOFF.md." >&2
+  exit 1
+fi
+
 echo "OK: transport contract options present, and KMS stays out of maintained CI"
 fi
 exit "$rc"

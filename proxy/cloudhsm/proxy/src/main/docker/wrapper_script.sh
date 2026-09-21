@@ -92,4 +92,28 @@ fi
 #    meaning in-flight payment requests are killed abruptly.
 # ---------------------------------------------------------------------------
 echo "* starting application"
-exec java ${JAVA_OPTS:-} -jar application.jar
+# DNS cache bound, and it MUST be here rather than in application code.
+#
+# Manual de Seguranca do Pix section 2 requires clients to respect the DNS TTL, and the
+# JVM does not: it applies its own fixed cache, defaulting to 30s with no security
+# manager and to -1 (CACHE FOREVER) when one is installed. A stale address then
+# outlives a BCB endpoint move for the life of the process, which is the "loss of
+# access" the manual warns about.
+#
+# MEASURED: the JDK reads networkaddress.cache.ttl ONCE, in the static initializer of
+# sun.net.InetAddressCachePolicy. The proxy resolves names during startup (SSM, Secrets
+# Manager, the Firehose client) before its Camel routes are configured, so a
+# Security.setProperty call from application code runs after the policy has frozen and
+# changes nothing - it sets the property and the JVM keeps using the old value.
+# sun.net.inetaddr.ttl is the system-property fallback the JDK consults when the
+# security property is unset, and -D is the only way to get a value in before the first
+# lookup. DnsCachePolicy.apply() still runs and now VERIFIES the effective value,
+# logging loudly if it disagrees, but this line is what actually does the work.
+#
+# --add-exports lets that verification read the effective policy; without it the log
+# says "UNVERIFIED" rather than falsely confirming.
+PIX_DNS_TTL="${PIX_DNS_TTL:-30}"
+PIX_DNS_OPTS="-Dsun.net.inetaddr.ttl=${PIX_DNS_TTL} -Dsun.net.inetaddr.negative.ttl=1"
+PIX_DNS_OPTS="${PIX_DNS_OPTS} --add-exports java.base/sun.net=ALL-UNNAMED"
+
+exec java ${PIX_DNS_OPTS} ${JAVA_OPTS:-} -jar application.jar

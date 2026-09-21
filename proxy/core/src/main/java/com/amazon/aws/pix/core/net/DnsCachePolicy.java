@@ -54,11 +54,18 @@ public final class DnsCachePolicy {
     /**
      * Applies bounded DNS caching using the defaults.
      *
-     * @return a description of what was applied, for logging at startup
+     * @return a description of what was applied AND what actually took effect, for logging at startup
      */
     public static String apply() {
         return apply(DEFAULT_TTL_SECONDS, DEFAULT_NEGATIVE_TTL_SECONDS);
     }
+
+    /**
+     * System property the JDK consults as a FALLBACK when the security property is unset. Unlike the
+     * security property it can be set on the command line, which is the only way to get a value in
+     * before the first name resolution — see {@link #apply(int, int)}.
+     */
+    public static final String LEGACY_SYSTEM_PROPERTY = "sun.net.inetaddr.ttl";
 
     /**
      * @param ttlSeconds         positive cache duration; must be {@code >= 0}. Passing a negative
@@ -76,13 +83,55 @@ public final class DnsCachePolicy {
         Security.setProperty(TTL_PROPERTY, Integer.toString(ttlSeconds));
         Security.setProperty(NEGATIVE_TTL_PROPERTY, Integer.toString(negativeTtlSeconds));
 
+        // Report what took effect, not what was requested. MEASURED: the JDK reads this property
+        // ONCE, in the static initializer of sun.net.InetAddressCachePolicy, and thereafter returns
+        // the frozen value. Any name resolution - an SSM call, a Secrets Manager call, building an
+        // AWS client - loads that class, so a write from application startup code afterwards sets the
+        // property and changes nothing. An earlier version of this method logged success in exactly
+        // that situation, which is worse than doing nothing: it makes an ineffective configuration
+        // look verified. Measured: with a lookup first, the property reads 7 while the effective
+        // policy stays 30.
+        final Integer effective = effectivePolicySeconds();
+        final String verdict;
+        if (effective == null) {
+            verdict = " EFFECTIVE VALUE UNVERIFIED (sun.net is not reflectively accessible here) - "
+                    + "confirm " + LEGACY_SYSTEM_PROPERTY + " is set on the command line.";
+        } else if (effective == ttlSeconds) {
+            verdict = " Effective policy confirmed as " + effective + "s.";
+        } else {
+            verdict = " *** INEFFECTIVE: the JVM is still caching for " + effective + "s. This call "
+                    + "ran after the first name resolution had already frozen the policy. Set -D"
+                    + LEGACY_SYSTEM_PROPERTY + "=" + ttlSeconds + " on the command line instead; a "
+                    + "security-property write from application code cannot fix this. ***";
+        }
+
         return String.format(
-                "DNS cache bounded: %s=%d (was %s), %s=%d. Manual de Seguranca do Pix section 2 "
+                "DNS cache requested: %s=%d (was %s), %s=%d. Manual de Seguranca do Pix section 2 "
                         + "requires respecting DNS TTL; the JVM applies a fixed cache rather than the "
                         + "record's own TTL, and defaults to -1 (forever) when a security manager is "
-                        + "installed.",
+                        + "installed.%s",
                 TTL_PROPERTY, ttlSeconds, previous == null ? "unset" : previous,
-                NEGATIVE_TTL_PROPERTY, negativeTtlSeconds);
+                NEGATIVE_TTL_PROPERTY, negativeTtlSeconds, verdict);
+    }
+
+    /**
+     * The cache duration the JVM is actually applying, or {@code null} if it cannot be read.
+     *
+     * <p>Read reflectively from {@code sun.net.InetAddressCachePolicy} because there is no public API
+     * for it. That package is not exported by {@code java.base}, so this returns {@code null} unless
+     * the JVM was started with {@code --add-exports java.base/sun.net=ALL-UNNAMED}. Returning
+     * {@code null} rather than throwing is deliberate: an unverifiable reading must not take the
+     * proxy down, but it must also not be reported as a confirmation.
+     */
+    public static Integer effectivePolicySeconds() {
+        try {
+            final Class<?> policy = Class.forName("sun.net.InetAddressCachePolicy");
+            final java.lang.reflect.Method get = policy.getDeclaredMethod("get");
+            get.setAccessible(true);
+            return (Integer) get.invoke(null);
+        } catch (Throwable unavailable) {
+            return null;
+        }
     }
 
     /** The value actually in effect, so a startup log can state it rather than assume it. */

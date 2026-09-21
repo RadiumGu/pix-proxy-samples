@@ -94,4 +94,45 @@ public class DnsCachePolicyTest {
         assertTrue(description, description.contains(DnsCachePolicy.TTL_PROPERTY));
         assertTrue(description, description.contains("17"));
     }
+
+    /**
+     * The defect this class previously had, and the reason every other test here was too weak: all of
+     * them asserted the {@code Security} property write, which always succeeds. The property is only
+     * <em>read</em> once, in {@code sun.net.InetAddressCachePolicy}'s static initializer, so a write
+     * after the first name resolution changes nothing — and the method used to report success anyway.
+     *
+     * <p>MEASURED: with a lookup performed first, the property reads 7 while the effective policy
+     * stays 30. This test forces that ordering and requires the description to SAY it was ineffective
+     * rather than claim success.
+     */
+    @Test
+    public void applyReportsHonestlyWhenItRanTooLateToTakeEffect() throws Exception {
+        // Force the policy class to initialise, exactly as any startup DNS lookup would.
+        try {
+            java.net.InetAddress.getByName("localhost");
+        } catch (Exception ignored) {
+            // Resolution failure still loads the class, which is all this needs.
+        }
+
+        final Integer effective = DnsCachePolicy.effectivePolicySeconds();
+        final String description = DnsCachePolicy.apply(7, 1);
+
+        if (effective == null) {
+            // sun.net is not exported here, so the method cannot verify - it must say so rather than
+            // confirm. Production adds --add-exports for exactly this reason.
+            assertTrue(description, description.contains("UNVERIFIED"));
+        } else if (effective != 7) {
+            assertTrue("an ineffective call must not report success: " + description,
+                    description.contains("INEFFECTIVE"));
+            assertTrue(description, description.contains(DnsCachePolicy.LEGACY_SYSTEM_PROPERTY));
+        } else {
+            assertTrue(description, description.contains("confirmed"));
+        }
+    }
+
+    /** The verification helper must never throw, whatever the JVM allows. */
+    @Test
+    public void theEffectivePolicyReaderNeverThrows() {
+        DnsCachePolicy.effectivePolicySeconds();
+    }
 }

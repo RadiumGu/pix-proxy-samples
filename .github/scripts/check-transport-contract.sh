@@ -399,6 +399,17 @@ if ! printf '%s' "$CHECK_ROUTE_CODE" | grep -q 'writer\.close()'; then
   exit 1
 fi
 
+# The refusal must inspect the BODY, not only the declared Content-Encoding. Measured:
+# a client that gzips the body and omits the header passed straight through, and the
+# mojibake was signed under the PSP key and forwarded to BCB - the exact catastrophe
+# the header check was added to prevent, reachable by a broken client.
+if ! grep -q 'mustReject(contentEncoding, body)' \
+     proxy/cloudhsm/proxy/src/main/java/com/amazon/aws/pix/cloudhsm/proxy/processor/RejectCompressedRequestProcessor.java; then
+  echo "ERROR: RejectCompressedRequestProcessor no longer sniffs the body, so a gzip body sent" >&2
+  echo "       WITHOUT a Content-Encoding header would be signed as mojibake and forwarded." >&2
+  exit 1
+fi
+
 echo "OK: transport contract options present, and KMS stays out of maintained CI"
 fi
 exit "$rc"

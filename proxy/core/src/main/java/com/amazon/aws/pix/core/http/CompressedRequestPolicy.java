@@ -38,6 +38,39 @@ public final class CompressedRequestPolicy {
     }
 
     /**
+     * Magic bytes of a gzip member: RFC 1952 ID1=0x1f, ID2=0x8b.
+     */
+    private static final byte GZIP_ID1 = (byte) 0x1f;
+    private static final byte GZIP_ID2 = (byte) 0x8b;
+
+    /**
+     * Refuses a body that IS compressed regardless of what the client declared.
+     *
+     * <p>This exists because checking the header alone was a self-declaration gate, and an
+     * independent review demonstrated the bypass on a real route: a client that gzips the body and
+     * simply omits {@code Content-Encoding} passed straight through, and the mojibake was signed
+     * under the PSP key and forwarded to BCB. That is the exact catastrophe the header check was
+     * added to prevent, reachable by an honest-but-broken client rather than an attacker.
+     *
+     * <p>So the decision is made on the content, not on the client's honesty. Only the unambiguous
+     * gzip signature is sniffed: a well-formed Pix request body is XML, which cannot begin with
+     * {@code 0x1f 0x8b} — the first byte is not valid in XML content at all. Raw DEFLATE is
+     * deliberately NOT sniffed, because it has no magic number and any heuristic would risk
+     * rejecting legitimate payloads, which for a payment proxy is the worse error.
+     *
+     * @param contentEncoding the request's {@code Content-Encoding} header, may be {@code null}
+     * @param body            the raw request body as received, may be {@code null}
+     */
+    public static boolean mustReject(final String contentEncoding, final byte[] body) {
+        return mustReject(contentEncoding) || looksCompressed(body);
+    }
+
+    /** @return {@code true} if the body carries a gzip signature whatever the headers claim */
+    public static boolean looksCompressed(final byte[] body) {
+        return body != null && body.length >= 2 && body[0] == GZIP_ID1 && body[1] == GZIP_ID2;
+    }
+
+    /**
      * @param contentEncoding the request's {@code Content-Encoding} header, may be {@code null}
      * @return {@code true} when the request must be refused rather than signed
      */

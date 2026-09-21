@@ -92,6 +92,43 @@ public class DictV2CompressedRequestRejectedContractTest {
                 String.valueOf(forwarded.get()).contains("SIGNED"));
     }
 
+    /**
+     * The bypass an independent review demonstrated, and the reason the header check alone was not
+     * enough: a client that gzips the body and omits {@code Content-Encoding} used to sail through,
+     * and the mojibake was signed under the PSP key and forwarded to BCB. That is the commit's own
+     * stated catastrophe, reachable by an honest-but-broken client rather than an attacker.
+     */
+    @Test
+    public void gzipBytesWithNoContentEncodingHeaderAreAlsoRefused() throws Exception {
+        startProxy();
+
+        final HttpURLConnection connection = post("/api/v2/entries", gzip("<Entry/>"), null);
+
+        assertEquals("a compressed body must be refused however it is declared",
+                CompressedRequestPolicy.REJECTION_STATUS, connection.getResponseCode());
+        assertEquals("the undeclared case must never reach a signer either",
+                0, signerInvocations.get());
+        assertNull("and nothing may be forwarded to BCB", forwarded.get());
+    }
+
+    /**
+     * Negative control for the sniffing, and the one that keeps it from becoming a liability: an
+     * ordinary XML body whose bytes merely start with something unusual must still be accepted.
+     * Over-rejecting a legitimate Pix request is the worse error of the two.
+     */
+    @Test
+    public void anUncompressedBodyIsNotMistakenForGzip() throws Exception {
+        startProxy();
+
+        // 0x1f alone is not the gzip signature; only 0x1f 0x8b is.
+        final byte[] body = new byte[] {0x1f, 0x3c, 'a', '/', '>'};
+        final HttpURLConnection connection = post("/api/v2/entries", body, null);
+
+        assertEquals("sniffing must not reject on a single coincidental byte",
+                200, connection.getResponseCode());
+        assertEquals(1, signerInvocations.get());
+    }
+
     /** Mirrors the production ordering: reject, then convert, then sign, then forward. */
     private void startProxy() throws Exception {
         final String consumer = "netty-http:http://0.0.0.0:" + proxyPort + "?matchOnUriPrefix=true";
@@ -102,7 +139,8 @@ public class DictV2CompressedRequestRejectedContractTest {
         final Processor rejectCompressed = exchange -> {
             final String encoding =
                     exchange.getIn().getHeader(Exchange.CONTENT_ENCODING, String.class);
-            if (CompressedRequestPolicy.mustReject(encoding)) {
+            final byte[] raw = exchange.getIn().getBody(byte[].class);
+            if (CompressedRequestPolicy.mustReject(encoding, raw)) {
                 exchange.getMessage().setHeader(Exchange.HTTP_RESPONSE_CODE,
                         CompressedRequestPolicy.REJECTION_STATUS);
                 exchange.getMessage()

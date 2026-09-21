@@ -24,13 +24,23 @@ public class RejectCompressedRequestProcessor implements Processor {
         final String contentEncoding =
                 exchange.getIn().getHeader(Exchange.CONTENT_ENCODING, String.class);
 
-        if (!CompressedRequestPolicy.mustReject(contentEncoding)) {
+        // Read as bytes, BEFORE any string conversion, so the gzip signature is still intact. The
+        // body must be sniffed and not merely the header trusted: a client that gzips the body and
+        // omits Content-Encoding was measured passing straight through, with the mojibake signed
+        // under the PSP key and forwarded to BCB.
+        final byte[] body = exchange.getIn().getBody(byte[].class);
+
+        if (!CompressedRequestPolicy.mustReject(contentEncoding, body)) {
             return;
         }
 
-        log.warn("Refusing a compressed request body (Content-Encoding={}). BCB does not accept "
-                + "compressed requests, and signing it would mean signing a corrupted document.",
-                contentEncoding);
+        final boolean undeclared = CompressedRequestPolicy.looksCompressed(body)
+                && !CompressedRequestPolicy.mustReject(contentEncoding);
+
+        log.warn("Refusing a compressed request body (Content-Encoding={}, gzip signature in body={})."
+                + " BCB does not accept compressed requests, and signing it would mean signing a "
+                + "corrupted document.{}", contentEncoding, undeclared,
+                undeclared ? " The body was compressed WITHOUT declaring it - a broken client." : "");
 
         exchange.getMessage().setHeader(Exchange.HTTP_RESPONSE_CODE,
                 CompressedRequestPolicy.REJECTION_STATUS);

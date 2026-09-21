@@ -239,6 +239,147 @@ AWS. They say nothing about TLS against BCB, about BCB's certificate chain, or a
 `dict.pi.rsfn.net.br` has no public A record — RSFN is a private network — so the real endpoint
 cannot be probed from outside it. Passing these is **not** evidence of BCB homologação.
 
+## Cluster high availability: how to size it, and the setting that decides everything
+
+All of the following was **measured on real CloudHSM hardware** — two clusters, HSMs deleted
+while signing, then restored — not reasoned from the documentation. Timings are from
+`hsm2m.medium` clusters in FIPS mode driven by `cloudhsm-cli` 5.18.0.
+
+### The one thing to get right
+
+SDK 5 enforces a **key availability quorum**: by default a key must exist on **at least two
+HSMs** before an application may use it. AWS documents the consequence as *"any attempt to
+create **or use** a token key will fail"* — note *use*, not just *create*. The quorum is
+re-evaluated against current cluster membership on **every operation**, so a key that is already
+fully replicated stops working the moment the cluster drops below two HSMs.
+
+That produces three configurations, and one of them should never ship:
+
+| | HSMs | Quorum | One HSM lost | Measured |
+|---|---|---|---|---|
+| **A** | 3 | enabled (default) | Signing continues — two remain | inferred from the quorum rule |
+| **B** | 2 | disabled | **Signing continues** at full speed | MEASURED 5/5 OK, 0.38–0.46 s |
+| **C** | 2 | enabled (default) | **Total signing outage** | MEASURED 3/3 fail, 87.2 s each |
+
+**Configuration C is strictly dominated.** It costs exactly what B costs and loses all signing
+capability when one HSM goes away. Two HSMs with the default quorum is the shape you get by
+following the obvious path, and it is the one to avoid.
+
+### What was measured, in order
+
+Healthy two-HSM cluster, quorum disabled, key generated with the attributes a PSP signing key
+needs (`extractable=false`, `never-extractable=true`, `sign=true`, `cluster-coverage: full`):
+
+```
+{"phase":"baseline_2hsm","n":1,"dur":0.515,"ok":true}   ... 5/5 ok, 0.46-0.52 s
+```
+
+Then one HSM of the two was deleted and the same key was used again:
+
+```
+{"phase":"degraded_1hsm_existing_key","n":1,"dur":0.393,"ok":true}   ... 5/5 ok, 0.38-0.46 s
+```
+
+**Signing continued at full speed with no configuration change and no restart.** The same
+deletion against configuration C produced, three times over:
+
+```
+error_code: 1 — Cannot perform the requested key operation as the key must be
+available on at least 2 HSMs
+```
+
+each after **87.2 seconds** (three measurements, spread 0.04 s — a fixed internal retry budget,
+not network jitter).
+
+Restoring a second HSM recovered configuration C automatically, in 0.45 s, **without** the
+replacement's new ENI IP being added to the client config — the client discovers cluster members
+by itself. Note the replacement arrives on a **new** IP.
+
+### `cluster-coverage: full` does not mean what it looks like
+
+This is the trap in this whole area, and it invalidates the obvious safety check.
+
+A key created **while the cluster was degraded to one HSM** reports:
+
+```
+"cluster-coverage": "full"
+```
+
+`full` means *present on every HSM currently in the cluster* — and there was only one. So a key
+that exists on a single HSM, and would be lost with that HSM, reports exactly the same coverage
+string as a key safely replicated across two. **Coverage is relative to current cluster
+membership; it is not a durability measure.**
+
+Therefore, if you run configuration B, the operational rule is **not** "check
+`cluster-coverage` after creating a key" — that check cannot fail. The rule is:
+
+> **Verify the cluster has at least two ACTIVE HSMs before creating or importing any key.**
+> Count HSMs (`describe-clusters`, or `cloudhsm-cli cluster hsm-info`), do not read a coverage
+> string.
+
+For this workload the rule is easy to keep: the PSP signing key and the mTLS client key are
+generated once at provisioning and again only at rotation, both planned activities.
+
+### Choosing between A and B
+
+- **A buys enforcement, not merely headroom.** The cluster refuses to use an under-replicated
+  key, so it cannot happen by accident. No human discipline is required. Cost: one more HSM.
+- **B buys the same availability for two HSMs' worth of money**, at the price of one operational
+  rule and a thinner margin: if the surviving HSM fails before a replacement synchronises,
+  recovery is from backup. AWS takes daily automatic backups plus additional backups on cluster
+  lifecycle events such as adding or removing an HSM, so for a static signing key that loses
+  nothing, and for keys created since the last backup it loses them.
+
+**Availability Zone placement is part of choosing A.** Three HSMs spread across only **two** AZs
+does not tolerate an AZ failure: losing the AZ holding two of them leaves one, which is below
+quorum, and the outage is identical to configuration C. Put each HSM in its own AZ.
+
+### Client timeouts must be set deliberately
+
+The degraded failure in configuration C is **slow, not fast** — 87 seconds before the error
+surfaces. On a synchronous Pix request path that means requests pile up rather than failing
+quickly, so a client-side timeout below the Pix response budget is required regardless of which
+configuration is chosen. The proxy's BCB endpoint sets `requestTimeout(30_000L)` for this
+reason.
+
+### Audit coverage of HSM add/remove is split across two sources
+
+A joining HSM's audit stream opens with `CN_RESTORE_BEGIN`, `PARTITION_BACKUP_RESTORE_LOG`,
+`CERT_AUTH/RSA/KEK` — key replication into a new HSM **is** auditable. **Removal is not recorded
+as an event**: the deleted HSM's stream simply ends with `END_MARKER_OPCODE`. From the CloudHSM
+log alone, a deliberate deletion and a crash are indistinguishable.
+
+The lifecycle lives in **CloudTrail** (`CreateHsm`, `DeleteHsm`, `InitializeCluster`, attributed
+to a principal), which also records **rejected** attempts. An audit trail must collect **both**
+sources; the HSM log alone cannot answer "who removed an HSM".
+
+### Operational sequencing traps, all measured
+
+1. **A second HSM cannot be added until the cluster is fully ACTIVATED**, not merely
+   initialized: `CreateHsm` is refused with *"already contains an HSM but has not yet been fully
+   activated"*. Activation means logging in and setting the admin password with the client.
+2. **The control plane lags the data plane.** `cluster activate` returned success while
+   `describe-clusters` still read `INITIALIZED` for ~80 s, and `CreateHsm` was refused for that
+   whole window. On teardown, both HSM deletions were accepted while the cluster still reported
+   2 HSMs for ~120 s, so a `delete-cluster` issued on the API response alone fails. Automation
+   must poll state, not trust the immediate reply.
+3. **The client cannot reach an HSM until its security group allows it.** The HSM ENI carries
+   only the cluster's own security group, which admits intra-group traffic, so an instance in a
+   different group gets nothing on port 2223. The symptom is misleading: activation fails with
+   *"Failed to initialize hsm1 context"*, which reads like a cluster-type mismatch and is pure
+   network isolation. Attach the cluster security group to the client instance.
+4. **`configure-cli` in 5.18.0 takes options with no subcommand.** The documented
+   `configure-cli update -a <ip>` form is from an older SDK 5 and is rejected with *"unrecognized
+   subcommand 'update'"*. Also `-a <HSM ENI IP>...` is **variadic** — both addresses go in one
+   `-a`, and repeating the flag fails.
+5. **`rpm -E %rhel` returns the literal `%rhel` on Amazon Linux 2023.** Discover the EL version
+   by trying candidates rather than trusting the macro.
+6. **Default key attributes are wrong for a PSP signing key.** Generated without explicit
+   attributes, the private key comes back `extractable: true`, `never-extractable: false`,
+   `sign: false` — extractable and unable to sign. Pass
+   `--private-attributes sign=true extractable=false` explicitly. The same gap exists on the JCE
+   path, where SDK 5 defaults `extractable` to true.
+
 ## Following is the proposed architecture
 
 The architecture presented here can be part of a more complete, [event-based solution](https://aws.amazon.com/en/event-driven-architecture/), which can cover the entire payment message transmission flow, from the banking core. For example, the complete solution of the Financial Institution (paying or receiving), could contain other complementary architectures such as **Authorization**, **Undo** (based on the [SAGA model](https://docs.aws.amazon.com/whitepapers/latest/microservices-on-aws/distributed-data-management.html)), **Effectiveness**, **Communication with on-premises** environment ([hybrid environment](https://aws.amazon.com/en/hybrid/)), etc., using other services such as [Amazon EventBridge](https://aws.amazon.com/en/eventbridge/), Amazon Simple Notification Service ([SNS](https://aws.amazon.com/en/sns/?whats-new-cards.sort-by=item.additionalFields.postDateTime&whats-new-cards.sort-order=desc)), Amazon Simple Queue Service ([SQS](https://aws.amazon.com/en/sqs/)), [AWS Step Functions](https://aws.amazon.com/en/step-functions/), [Amazon ElastiCache](https://aws.amazon.com/en/elasticache/), [Amazon DynamoDB](https://aws.amazon.com/en/dynamodb/).

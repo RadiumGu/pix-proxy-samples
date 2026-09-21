@@ -126,7 +126,7 @@ the moment the cluster dropped to one HSM.
 | | HSMs | Quorum | Loses 1 HSM | Monthly, sa-east-1 |
 |---|---|---|---|---|
 | **A** | 3 | enabled | Signing continues (2 remain) | $5,957 |
-| **B** | 2 | disabled | Signing continues (survivor holds the key) | $3,971 |
+| **B** | 2 | disabled | Signing continues (MEASURED 5/5, 0.38-0.46 s) | $3,971 |
 | **C** | 2 | enabled | **Total signing outage** | $3,971 |
 
 **C costs exactly what B costs and is strictly worse.** Whatever else is decided, the current
@@ -137,13 +137,17 @@ A versus B is a real trade, not a formality:
 - **A buys enforcement, not just headroom.** The cluster will refuse to use a key that is not
   replicated, so an unreplicated key cannot be used by accident. That is a safety property no
   operational rule can fully replace, and it needs no discipline from anyone.
-- **B needs exactly one operational rule:** never create or import a key while the cluster is
-  degraded, and verify `cluster-coverage: full` after any key creation. For this workload that
-  rule is easy to keep — the PSP signing key and the mTLS client key are generated once at
-  provisioning and again only at rotation, both planned activities. The exposure B accepts is a
-  key created during a degraded window, plus AWS's stated 24-hour window between automatic
-  backups (additional backups are taken on cluster lifecycle events such as adding or removing
-  an HSM).
+- **B needs exactly one operational rule, and it is not the obvious one.** I first wrote that
+  rule as "verify `cluster-coverage: full` after any key creation". Measurement showed that check
+  **cannot fail**: a key created while the cluster was degraded to one HSM also reports
+  `cluster-coverage: "full"`, because `full` means *present on every HSM currently in the
+  cluster* — and there was one. Coverage is relative to current membership, not a durability
+  measure. The rule that works is: **verify at least two ACTIVE HSMs before creating or importing
+  a key** — count HSMs, do not read a coverage string. For this workload that is easy to keep:
+  the PSP signing key and the mTLS client key are generated once at provisioning and again only
+  at rotation, both planned activities. The exposure B accepts is a key created during a degraded
+  window, plus AWS's stated 24-hour window between automatic backups (additional backups are
+  taken on cluster lifecycle events such as adding or removing an HSM).
 - **B is thinner against a double failure.** If the surviving HSM fails before a replacement has
   synchronised, recovery is from backup. For a static signing key that loses nothing; for keys
   created since the last backup it loses them.
@@ -172,12 +176,26 @@ constraint.
 Use the AWS Pricing Calculator for an authoritative estimate; the figures above are list prices
 for sizing a decision, not a quote.
 
-### What has NOT been measured
+### Configuration B has now been measured
 
-Configuration B's central claim — that with the quorum disabled, deleting one HSM of two leaves
-signing working — is **INFERRED** from the documentation plus the measurements above. It was not
-run. Configurations A and C were measured; B was not. If the decision comes down to B, that one
-experiment is worth an hour of cluster time before committing to it.
+A third cluster was built specifically to test it: two HSMs across two AZs, quorum disabled, a
+PSP-attributed key generated while healthy (`cluster-coverage: full`, `never-extractable: true`,
+`sign: true`), a five-signature baseline, then one HSM deleted.
+
+```
+baseline, 2 HSMs   5/5 ok   0.46-0.52 s
+degraded, 1 HSM    5/5 ok   0.38-0.46 s   <- the existing key still signs
+```
+
+**Configuration B's availability claim holds**, with no configuration change and no restart. The
+same deletion under configuration C failed 3/3 at 87.2 s each. A key generated *while* degraded
+was also usable — and reported `cluster-coverage: "full"`, which is what invalidated the naive
+safety check described above.
+
+What remains unmeasured is configuration **A**: a three-HSM cluster losing one HSM. It follows
+directly from the quorum rule (two remain, so the quorum is met) and from configuration B's
+demonstration that a single surviving HSM serves signatures at full speed, but it was not run.
+The 3-AZ placement requirement was not measured either; it is deduced from the same rule.
 
 Three further operational findings:
 

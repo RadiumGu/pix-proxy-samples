@@ -45,7 +45,7 @@ special rigour:
   for the **alphanumeric CNPJ** now being introduced in Brazil.
 - "Regex para número de conta passou apenas a permitir letras maiúsculas e números (`^[A-Z0-9]{1,20}$`)". None of it affects this proxy, which forwards bytes and never parses business content; `DictV2RequestPolicy` checks header *presence* only. Also of note: `getBucketState`/`listBucketStates` moved off `dict-ratelimit.pi.rsfn.net.br` in 2.6.0 and the old host now returns **HTTP 410** (`Gone`/`DeprecatedResource`, which is a documented DICT status); MED 2.0 Funds Recovery, Fraud Markers and Event Notifications endpoints exist but are out of scope per section 1.
 
-## 2B. Open item — `Cache-Control` on entry queries is not addressed
+## 2B. `Cache-Control` on entry queries — defect found and fixed
 
 Found by an independent fact-check of this document against the DICT API page, and it is a genuine
 gap rather than a documentation nicety. The API page states, under *Consultar Vínculo → Cache*:
@@ -67,11 +67,27 @@ window, so honouring it is a correctness requirement, not a performance tweak.
 caching of its own. Deciding whether and how the PSP caches is a business-layer decision and stays
 out of scope per section 1.
 
-Status: **untested**. The transparent-proxy contract tests assert path, query, repeated query,
-headers and body, but nothing asserts that a *response* header such as `Cache-Control` survives the
-proxy — and the response leg is where this document has already found two defects (the gzip decode
-and the missing decoded-length header handling). A test is warranted and is recorded here rather
-than assumed.
+Status: **was a real defect, now fixed.** Writing the test this section called for found it
+immediately. MEASURED: camel-netty-http 3.4.2's stock `NettyHttpHeaderFilterStrategy` carries an
+out-filter list containing `cache-control` — along with `pragma`, `warning`, `via`, `date` and the
+hop-by-hop headers — so a BCB response reached the caller with **no** `Cache-Control` at all, while
+`ETag` beside it passed through untouched. The loss was silent.
+
+`PixHttpHeaderFilterStrategy` removes only the end-to-end caching directives (`cache-control`,
+`pragma`, `warning`), on both legs. The hop-by-hop and recomputed headers stay filtered deliberately:
+forwarding `content-length` or `transfer-encoding` would truncate or corrupt a re-framed body —
+acutely so after gzip decoding changes the length — and forwarding `connection` or `upgrade` would let
+an upstream directive act on a different connection.
+
+`DictV2ResponseHeaderFidelityContractTest` pins the defect as well as the fix, so the fix cannot be
+mistaken for something the framework already did: one test asserts the stock strategy drops the header
+while `ETag` survives, another asserts the un-filtered strategy keeps it.
+
+One harness trap is recorded with it, because the first version of that test made the fix look like a
+**no-op**: the stand-in BCB must ALSO use an un-filtered strategy, or its own consumer filters
+`cache-control` before the header ever reaches the wire — and the test then blames the proxy for a
+loss that happened in the fixture. The two cases now differ only in the proxy's filter, which is what
+makes the comparison mean anything.
 
 ## 2A. Homologação gate — BCB certificate revocation checking
 

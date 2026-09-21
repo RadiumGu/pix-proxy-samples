@@ -12,6 +12,7 @@ import java.nio.file.Path;
 import java.nio.file.StandardOpenOption;
 import java.util.List;
 import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.CyclicBarrier;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
@@ -107,38 +108,72 @@ public class AuditSpoolDurabilityTest {
     }
 
     /**
-     * The negative control that gives the test above its meaning: the OLD algorithm — read the size,
-     * then append, with no lock between them — must OVERSHOOT the same cap under the same load.
+     * The negative control that gives the test above its meaning: the OLD algorithm - read the size,
+     * then append, with no lock between them - MUST overshoot the cap.
      *
-     * <p>Without this, "size <= cap" could pass simply because the load never approached the cap, and
-     * the fix would be unverified. This is the defect reproduced, not described.
+     * <p>Without this, "size &lt;= cap" could pass simply because the load never approached the cap,
+     * and the fix would be unverified.
+     *
+     * <h2>Why a barrier instead of thread contention</h2>
+     *
+     * <p>The first version of this control raced 16 threads and asserted that they overshot. It
+     * passed locally and then FAILED in CI, reaching 3970 against a 4000 cap - the interleaving
+     * simply did not go badly enough on a less contended machine. That made the control flaky, which
+     * is worse than not having it: a check that reds at random trains people to ignore it, and its
+     * own failure message had to tell the reader whether to believe it.
+     *
+     * <p>So the interleaving is now forced rather than hoped for. Every thread performs the CHECK,
+     * waits at a barrier until all of them have checked, and only then performs the APPEND. That is
+     * precisely the check-then-act window the production lock closes, made deterministic: all threads
+     * observe the same under-cap size, all conclude they may write, and all write. The overshoot is
+     * guaranteed by construction rather than by scheduling luck.
      */
     @Test
     public void theOldUnsynchronizedAlgorithmOvershootsTheCap() throws Exception {
         final Path file = folder.newFolder("control").toPath().resolve("spool.ndjson");
         Files.createDirectories(file.getParent());
-        final long cap = 4_000L;
 
-        runConcurrently(index -> {
-            final byte[] line = ("{\"id\":\"" + index + "\",\"pad\":\"aaaaaaaaaaaaaaaaaaaa\"}"
-                    + System.lineSeparator()).getBytes(StandardCharsets.UTF_8);
-            try {
-                // Exactly the shipped logic before this commit: check, then act, unsynchronised.
-                final long existing = Files.exists(file) ? Files.size(file) : 0L;
-                if (existing + line.length > cap) {
-                    return;
-                }
-                Files.write(file, line, StandardOpenOption.CREATE, StandardOpenOption.WRITE,
-                        StandardOpenOption.APPEND);
-            } catch (IOException ignored) {
-                // A control; its failures are not the subject.
+        final byte[] line = ("{\"id\":\"x\",\"pad\":\"aaaaaaaaaaaaaaaaaaaa\"}"
+                + System.lineSeparator()).getBytes(StandardCharsets.UTF_8);
+        // A cap that one record fits inside and THREADS records cannot.
+        final long cap = line.length + 1L;
+
+        final CyclicBarrier allHaveChecked = new CyclicBarrier(THREADS);
+        final ExecutorService pool = Executors.newFixedThreadPool(THREADS);
+        try {
+            for (int thread = 0; thread < THREADS; thread++) {
+                pool.submit(() -> {
+                    // CHECK - exactly the shipped logic before this commit.
+                    final long existing = Files.exists(file) ? Files.size(file) : 0L;
+                    final boolean permitted = existing + line.length <= cap;
+
+                    // Hold every thread here until all of them have decided, which forces the
+                    // check-then-act window open instead of waiting for it to happen by chance.
+                    allHaveChecked.await(30, TimeUnit.SECONDS);
+
+                    // ACT
+                    if (permitted) {
+                        Files.write(file, line, StandardOpenOption.CREATE, StandardOpenOption.WRITE,
+                                StandardOpenOption.APPEND);
+                    }
+                    return null;
+                });
             }
-        });
+            pool.shutdown();
+            assertTrue("the control threads did not finish in time",
+                    pool.awaitTermination(60, TimeUnit.SECONDS));
+        } finally {
+            pool.shutdownNow();
+        }
 
-        assertTrue("the old algorithm was expected to overshoot cap=" + cap + " but reached only "
-                        + Files.size(file) + ". If this ever fails, the concurrency assertion above "
-                        + "has stopped proving anything and this control must be made harsher.",
-                Files.size(file) > cap);
+        final long size = Files.size(file);
+        assertTrue("the unsynchronised algorithm must overshoot cap=" + cap + " once every thread "
+                        + "checks before any writes; it reached " + size + ". A pass here would mean "
+                        + "the check-then-act window has been closed somewhere other than the "
+                        + "production lock, and the concurrency assertion above needs re-examining.",
+                size > cap);
+        assertEquals("all " + THREADS + " threads should have written, since all of them observed an "
+                        + "empty file", (long) THREADS * line.length, size);
     }
 
     /** Runs the action from {@link #THREADS} threads released simultaneously. */

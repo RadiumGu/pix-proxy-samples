@@ -43,6 +43,40 @@ public class AuditSpool {
 
     private final Path spoolFile;
     private final long maxBytes;
+
+    /**
+     * How the spool file is opened for every append, in ONE place so the write path and the tests
+     * cannot disagree about it.
+     *
+     * <p>{@code DSYNC} is the point of this constant. Without it the "durable" fallback was not
+     * durable: {@code Files.write} returns once the bytes reach the page cache, so a host crash, a
+     * power loss, or a SIGKILL discards the tail. That is the precise scenario the spool exists to
+     * survive — it is the last resort after Firehose delivery has already failed — so a buffered
+     * write made the fallback an illusion for the one failure mode it was built for.
+     *
+     * <p>{@code DSYNC} rather than {@code SYNC} deliberately. Synchronised I/O <em>data</em>
+     * integrity flushes the content plus whatever metadata is needed to retrieve it, which for an
+     * append includes the new file length. {@code SYNC} additionally flushes metadata nobody here
+     * reads, such as mtime, and costs an extra device round-trip per record.
+     */
+    private static final StandardOpenOption[] OPEN_OPTIONS = {
+            StandardOpenOption.CREATE,
+            StandardOpenOption.WRITE,
+            StandardOpenOption.APPEND,
+            StandardOpenOption.DSYNC,
+    };
+
+    /**
+     * Serialises the size-check-and-append sequence.
+     *
+     * <p>The cap check reads the file size and the append acts on it, which is check-then-act. This
+     * class has at least two concurrent callers — Camel route threads via
+     * {@code LogRequestResponseProcessor}, and the {@code AsyncAuditWriter} worker spilling a failed
+     * batch — so without this lock N threads can each observe a size under the cap and all append,
+     * overshooting the cap by up to N-1 records. A lock on the emergency path is cheap; the records
+     * it protects are the ones that already survived a delivery failure.
+     */
+    private final Object writeLock = new Object();
     private final AtomicLong spooled = new AtomicLong();
     private final AtomicLong dropped = new AtomicLong();
 
@@ -96,19 +130,22 @@ public class AuditSpool {
             if (spoolFile.getParent() != null) {
                 Files.createDirectories(spoolFile.getParent());
             }
-            final long existing = Files.exists(spoolFile) ? Files.size(spoolFile) : 0L;
-            if (existing + line.length > maxBytes) {
-                dropped.incrementAndGet();
-                // The record is now genuinely lost - not delivered and not spooled. Previously this
-                // returned false in silence, so the single worst audit outcome was the quietest one
-                // in the logs. It carries a stable alarm token for that reason.
-                log.error("{} audit record LOST: the spool is full ({} bytes, cap {}) so the record "
-                                + "was neither delivered nor persisted. Ship and truncate the spool.",
-                        AuditAlarmTokens.SPOOL_WRITE_FAILED, existing, maxBytes);
-                return false;
+            // The check and the append must be one atomic step - see writeLock.
+            synchronized (writeLock) {
+                final long existing = Files.exists(spoolFile) ? Files.size(spoolFile) : 0L;
+                if (existing + line.length > maxBytes) {
+                    dropped.incrementAndGet();
+                    // The record is now genuinely lost - not delivered and not spooled. Previously
+                    // this returned false in silence, so the single worst audit outcome was the
+                    // quietest one in the logs. It carries a stable alarm token for that reason.
+                    log.error("{} audit record LOST: the spool is full ({} bytes, cap {}) so the "
+                                    + "record was neither delivered nor persisted. Ship and "
+                                    + "truncate the spool.",
+                            AuditAlarmTokens.SPOOL_WRITE_FAILED, existing, maxBytes);
+                    return false;
+                }
+                Files.write(spoolFile, line, OPEN_OPTIONS);
             }
-            Files.write(spoolFile, line,
-                    StandardOpenOption.CREATE, StandardOpenOption.WRITE, StandardOpenOption.APPEND);
             spooled.incrementAndGet();
             return true;
         } catch (IOException | RuntimeException e) {
@@ -118,6 +155,21 @@ public class AuditSpool {
                     spoolFile, e);
             return false;
         }
+    }
+
+    /**
+     * The open options the write path actually uses, exposed so a test asserts the SAME array the
+     * production append passes rather than a copy of it or a grep for the word "DSYNC".
+     *
+     * <p>Stated plainly: crash durability itself cannot be proven in a unit test — that needs real
+     * power loss. This assertion is therefore weaker than a behavioural one, and it is shared-source
+     * rather than structural only because the array below IS the array the append uses.
+     *
+     * <p>Public because the tests live in {@code com.amazon.aws.pix.core.test.audit}, a different
+     * package. Returns a clone so a caller cannot mutate how the spool opens its file.
+     */
+    public static StandardOpenOption[] openOptions() {
+        return OPEN_OPTIONS.clone();
     }
 
     /**

@@ -487,6 +487,173 @@ sources; the HSM log alone cannot answer "who removed an HSM".
    `--private-attributes sign=true extractable=false` explicitly. The same gap exists on the JCE
    path, where SDK 5 defaults `extractable` to true.
 
+## Two different things are called "quorum", and conflating them is a real hazard
+
+CloudHSM uses the word *quorum* for two unrelated mechanisms. One counts **HSMs**, the other
+counts **people**. They appear in the same command output, which is how they get confused.
+
+| | **Key availability quorum** | **Quorum authentication (M of N)** |
+|---|---|---|
+| Counts | **HSMs** holding the key | **users** approving the operation |
+| Purpose | key durability, and removing the post-creation routing race | multi-person control, separation of duties |
+| Enforced | client config plus current cluster membership | inside the HSM, verified against registered public keys |
+| Configured with | `configure-cli --disable-key-availability-check` | `cloudhsm-cli` quorum commands; per-key values set **at key generation** |
+| Default | **enabled** — minimum two HSMs | **off** — quorum values are 0 |
+| Blocks | creating or using an under-replicated key | an operation without enough approvals |
+
+Both are visible in one `key list --verbose` response. `cluster-coverage` and the availability
+behaviour belong to the first; `key-quorum-values` belongs to the second:
+
+```
+"key-quorum-values": {
+  "manage-key-quorum-value": 0,      <- M of N for key MANAGEMENT
+  "use-key-quorum-value": 0          <- M of N for key USE (signing)
+},
+"cluster-coverage": "full"           <- unrelated: availability, not approvals
+```
+
+The first mechanism is covered above. This section is about the second.
+
+### What M of N can control
+
+No single user can perform a quorum-controlled operation; a minimum number of users — between
+**2 and 8** — must cooperate. The controlled operations are grouped into *services*, and the
+grouping is what matters for a payment workload:
+
+| Service | Role | Operations |
+|---|---|---|
+| `user` | Admin | `user create`, `user delete`, `user change-password`, `user change-mfa` |
+| `quorum` | Admin | `quorum token-sign set-quorum-value` |
+| `cluster` | Admin | `cluster mtls register-trust-anchor`, `deregister-trust-anchor`, `set-enforcement` — **hsm2m.medium only** |
+| `key-management` | Crypto User | `key wrap`, `key unwrap`, `key share`, `key unshare`, `key set-attribute` |
+| `key-usage` | Crypto User | `key sign` |
+| `registration` | either | registering a public key for quorum authentication |
+
+### The approval flow
+
+1. Each user generates an **RSA-2048 signing key pair outside the HSM** and protects it
+   themselves — the HSM never holds it.
+2. Each user logs in and registers their **public** key:
+   `user change-quorum token-sign register --public-key <pub.pem> --signed-token <tokenfile>`.
+3. A user wanting a controlled operation obtains a token:
+   `quorum token-sign generate --service key-management --token <path> --filter attr.label=<label>`.
+   For key services the token is **bound to a specific key** by that filter.
+4. Approvers sign the token's `token` field — a SHA-256 digest of `approval_data` — **outside the
+   HSM**, for example with `openssl pkeyutl -sign -pkeyopt digest:sha256`, and their base64
+   signatures are pasted into the token file's `signatures` array with their username and role.
+5. The requester runs the operation with `--approval <token file>`.
+6. The HSM verifies each signature against the registered public keys and only then performs the
+   operation.
+
+Signing happens outside the HSM and verification happens inside it, so an approver's private key
+never enters the HSM, and forging an approval requires that private key.
+
+### Measured: the two key quorum values cannot be separated
+
+An earlier version of this section recommended setting `manage-private-key-quorum-value` while
+leaving `use-private-key-quorum-value` alone, so that key management needed approvals and signing
+did not. **That was measured and it is not implementable.** Three attempts at key generation:
+
+| `--manage-private-key-quorum-value` | `--use-private-key-quorum-value` | Result |
+|---|---|---|
+| 2 | 0 | **rejected** — `The manage key and use key quorum values must be set to a value greater than 1` |
+| 2 | 2 | accepted |
+| 0 | 0 | **rejected** — same error |
+
+Supplying one flag without the other is a CLI error, and both values must be greater than 1. The
+only way to have no key quorum is to omit both flags entirely, which leaves the values at 0. So
+key-level quorum authentication is **all or nothing per key**: gating management necessarily gates
+signing.
+
+The consequence, measured end to end on a key with `manage=2, use=2`:
+
+```
+sign, no approval          -> error_code 1  "Quorum Failed"
+sign, two approvals        -> error_code 0  signature returned
+sign, same token reused    -> error_code 1  "Invalid username-signature pair for quorum authorization"
+sign, one approval only    -> error_code 1  "Too few quorum approvals: currently 1 approvals, but 2 approvals required"
+set-attribute, 2 approvals -> error_code 0  "Attribute set successfully"
+```
+
+Tokens are single-use and M is enforced exactly. So **key-level quorum is unusable for an
+automated Pix signing key**: every signature would need a freshly generated token plus a fresh
+round of human approvals.
+
+### What protects the signing key instead
+
+The threat key-level quorum would have covered is someone exporting or weakening the key. Measured
+on a key with **no** quorum at all, that threat is already closed by attributes:
+
+```
+key set-attribute --name extractable       --value true
+  -> "Attribute extractable cannot be set to the value true by the user for this operation"
+key set-attribute --name never-extractable  --value false
+  -> "Attribute never-extractable cannot be set to the value false by the user for this operation"
+```
+
+Attributes were unchanged afterwards. A key generated with `extractable=false` and
+`never-extractable=true` cannot be made extractable later, so it cannot be wrapped out, with or
+without quorum. That removes most of what key-level quorum was wanted for here.
+
+**Where quorum authentication IS worth using** is the admin side, whose values are independently
+settable with `quorum token-sign set-quorum-value --service <user|quorum|cluster>` — note that
+command accepts only those three services, never the key ones:
+
+- **`user`** — no single admin can create a crypto-user alone. This matters, because a new
+  crypto-user can generate its own key and sign with it.
+- **`quorum`** — no single admin can lower the quorum values.
+- **`cluster`** — on `hsm2m.medium`, no single admin can change client-to-HSM mTLS enforcement or
+  its trust anchors.
+
+None of these touch the signing path.
+
+### Two token formats, and the documentation shows only one
+
+`cloudhsm-cli` 5.18.0 emits **different token structures** depending on the service, which matters
+before writing any automation against it:
+
+```
+registration service:
+  { "version": "2.0",
+    "tokens":     [ { "approval_data": "...", "unsigned": "<b64 sha256>", "signed": "" } ],
+    "signatures": [ { "username": "...", "role": "...", "signature": "" } ] }
+
+key-usage / key-management:
+  { "version": "2.0", "service": "key-usage", "key_reference": "0x...",
+    "approval_data": "...", "token": "<b64 sha256>", "signatures": [] }
+```
+
+The AWS documentation shows the **flat** key-service shape only. There is no `token` field in a
+registration token — the value to sign is `tokens[].unsigned` — so applying the documented shape to
+a registration token yields an empty signature and `InvalidQuorumSignature`. Applying the
+registration shape to a key token fails the other way, with `No token signatures provided`. A
+signing helper has to handle both.
+
+In both cases the signed value is a 32-byte SHA-256 digest, signed as-is rather than re-hashed:
+
+```
+openssl pkeyutl -sign -inkey <approver.key> -pkeyopt digest:sha256 -keyform PEM \
+  -in <decoded digest> -out <sig>
+```
+
+Registration is itself a quorum-token operation, which looks circular and is not: the token comes
+from the `registration` service and is signed by the registering user's **own** private key, which
+is exactly the proof of possession the HSM needs before it will trust that public key.
+
+### The lock-out hazard
+
+AWS's own guidance is to keep **at least two more admins than the M value**, so that if one is
+locked out the others can still reset passwords. Deleting users is the dangerous operation: if the
+number of available approvers falls below M, **you can no longer create users or authorise any
+operation, and you lose the ability to administer the cluster**. The documented recovery is to
+restore a backup into a **new cluster**.
+
+Token housekeeping details worth knowing: tokens expire **ten minutes** after creation by default;
+an HSM stores up to **1,024** tokens and purges an expired one when full; a user may sign their
+own token, which counts as one of the required approvals; and the "one active token per user per
+service" limit applies to the `user` and `quorum` services but **not** to key services. When MFA
+is enabled, the **same key** serves both MFA and quorum authentication.
+
 ## Following is the proposed architecture
 
 The architecture presented here can be part of a more complete, [event-based solution](https://aws.amazon.com/en/event-driven-architecture/), which can cover the entire payment message transmission flow, from the banking core. For example, the complete solution of the Financial Institution (paying or receiving), could contain other complementary architectures such as **Authorization**, **Undo** (based on the [SAGA model](https://docs.aws.amazon.com/whitepapers/latest/microservices-on-aws/distributed-data-management.html)), **Effectiveness**, **Communication with on-premises** environment ([hybrid environment](https://aws.amazon.com/en/hybrid/)), etc., using other services such as [Amazon EventBridge](https://aws.amazon.com/en/eventbridge/), Amazon Simple Notification Service ([SNS](https://aws.amazon.com/en/sns/?whats-new-cards.sort-by=item.additionalFields.postDateTime&whats-new-cards.sort-order=desc)), Amazon Simple Queue Service ([SQS](https://aws.amazon.com/en/sqs/)), [AWS Step Functions](https://aws.amazon.com/en/step-functions/), [Amazon ElastiCache](https://aws.amazon.com/en/elasticache/), [Amazon DynamoDB](https://aws.amazon.com/en/dynamodb/).

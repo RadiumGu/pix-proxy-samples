@@ -192,3 +192,31 @@ jobs:
           done
           [ "$rc" -eq 0 ] && echo "OK: every emitted field is declared in both READMEs"
           exit "$rc"
+
+  alarms:
+    name: audit alarms - CDK synth + assertions (GATING)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0 - resolved from the SHA, not from the tag I typed
+      - uses: actions/setup-node@39370e3970a6d050c480ffad4ff0ed4d3fdee5af # v4.1.0
+        with:
+          node-version: '22'
+      # npm ci, not npm install: the lockfile is committed and CI must build what was reviewed.
+      - name: install
+        working-directory: alarms
+        run: npm ci --no-audit --no-fund
+      - name: typecheck
+        working-directory: alarms
+        run: npx tsc --noEmit
+      # Assertions on the SYNTHESISED template. A synth that merely succeeds proves the
+      # TypeScript compiles and says nothing about whether the alarms are correct - replacing
+      # unverified documentation with unverified infrastructure code is not progress.
+      # One of these tests reads AuditAlarmTokens.java and fails if the Java tokens and the
+      # metric filters drift apart, because a filter matching a string nothing emits is an
+      # alarm that can never fire, which looks like coverage and is worse than none.
+      - name: assertions
+        working-directory: alarms
+        run: npx jest --ci
+      - name: cdk synth
+        working-directory: alarms
+        run: npx cdk synth --quiet

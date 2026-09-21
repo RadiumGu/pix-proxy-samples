@@ -1,0 +1,6 @@
+{
+  "app": "npx ts-node --prefer-ts-exts lib/pix-audit-alarms.ts",
+  "context": {
+    "@aws-cdk/core:newStyleStackSynthesis": true
+  }
+}

@@ -46,6 +46,77 @@ targets CloudHSM Client SDK 3 while `hsm1.medium` reached end of support on 2026
 creatable instance type requires SDK 5.9.0+, which in turn requires JDK 17+. Passing the test suite
 is **not** evidence of BCB homologação.
 
+## How it works, and why "transparent" is the whole design
+
+A Pix request from the institution's application does not go to BCB directly. It goes to this
+proxy, which is the mandatory path for every transaction. What the proxy does to it, in order —
+this is the actual production route:
+
+```
+  institution's application
+        │  plain HTTP, inside the VPC
+        ▼
+  ┌─────────────────────────────────────────────────────────────────┐
+  │ 1. onCompletion audit hook registered   ← runs even if the      │
+  │                                            BCB leg fails        │
+  │ 2. reject a compressed request body (415)                       │
+  │ 3. convert the body to a string                                 │
+  │ 4. SIGN the XML  ── private key stays inside CloudHSM ──────────┼──▶ CloudHSM
+  │ 5. capture the request for the audit record                     │
+  │ 6. send to BCB  ── mTLS, client key also inside CloudHSM ───────┼──▶ BCB / RSFN
+  │ 7. decode the response (gzip/deflate) then convert to string    │
+  │ 8. VERIFY BCB's signature on the response                       │
+  └─────────────────────────────────────────────────────────────────┘
+        │
+        ▼  audit record → Firehose (async, with an fsync'd on-disk fallback)
+```
+
+**The private key never leaves the HSM.** The proxy holds a *handle*, not key material — measured:
+the JCE object is a `CloudHsmRsaPrivateCrtKey` whose `getEncoded()` returns `null`. Signing happens
+inside the FIPS boundary; the proxy only asks for it.
+
+**Transparency is a correctness requirement, not a nicety.** An XML signature covers the document,
+so *any* mutation of the message between signing and BCB invalidates it — and a mutation on the
+inbound side means signing the wrong bytes. This is where most of the defects found in this
+repository came from, and it is why a source-level CI gate pins the route's endpoint options rather
+than trusting them to stay put. Things that must survive the proxy untouched, each with a test:
+
+- the request path, the query string, and **repeated** query parameters
+- headers BCB sets, including `Cache-Control` — a stock header filter silently dropped it, which
+  for `getEntry` bounds how stale a key-ownership answer may be, and a stale one means paying the
+  wrong account
+- the body, byte for byte — a compressed request body destroyed by string conversion would be
+  signed as wreckage, so it is refused with 415 instead
+- `ETag`, and the response status including `410` and the anti-scanning behaviour
+
+Two measured corrections worth knowing if you touch this code: `bridgeEndpoint=true` does **not**
+by itself preserve path and query, and clearing `HTTP_QUERY` alone does not drop the query because
+`HTTP_RAW_QUERY` is a second source.
+
+## Versions: what is pinned, and the one constraint that blocks deployment
+
+Read from `proxy/pom.xml` and `.github/workflows/build.yml`, not from prose — these are the values
+the build actually uses.
+
+| Component | Pinned | Why it is pinned there |
+|---|---|---|
+| Java | **11** (`temurin` in CI) | What CloudHSM Client SDK 3 supports |
+| Quarkus | 1.7.0.Final | The generation `camel-quarkus` 1.0.0 targets |
+| Camel Quarkus | 1.0.0 | Brings `camel-netty-http`, which speaks HTTP/1.1 as BCB requires |
+| Netty | **4.1.138.Final** | Earlier pins carried request-smuggling advisories (CWE-444); 4.1.118 still had CVE-2025-58056 |
+| netty-tcnative | 2.0.84.Final, `linux-x86_64-fedora` | Paired with that Netty; **x86_64 only**, so another architecture fails at startup |
+| Jackson | 2.15.4 | Security floor; both BOMs are imported **before** `quarkus-bom` so they win |
+| CloudHSM SDK 3 | **3.4.4-1** rpm, SHA-256 verified | The version this code targets |
+| Node (alarms app only) | 22 | For the CDK alarm app, outside the Maven build |
+
+**The blocking constraint.** The code targets CloudHSM Client **SDK 3**, but `hsm1.medium` reached
+end of support on **2026-03-31**, and the only creatable instance type needs **SDK 5.9.0+**, which
+in turn needs **JDK 17+**. So this cannot be deployed as written. The good news, measured on real
+hardware: `XmlSigner` runs **unmodified** on SDK 5 because JSR-105 routes the `Signature` operation
+to the CloudHSM provider, so the migration is confined entirely to the TLS half — Netty wants key
+*bytes* and an HSM only ever gives you a *handle*. The recommended way out is in
+[`PIX_CLOUDHSM_ASSESSMENT.md`](PIX_CLOUDHSM_ASSESSMENT.md) section 3.
+
 ## Before you size the cluster: two HSMs is not a redundant configuration
 
 This is on the front page because it is an early architecture and cost decision, it is
@@ -98,6 +169,43 @@ The cost comparison for two versus three HSMs is in
 Only `proxy/core` and `proxy/test` execute tests. `proxy/cloudhsm` and the simulator build with
 `-DskipTests`, so a test added to them would silently never run — after adding one, confirm the test
 **count** in the CI run rather than trusting a green tick.
+
+## Trying it locally
+
+Nothing here needs an AWS account or an HSM — the signature logic and the whole DICT v2 transport
+contract run against a local BCB simulator and committed certificate fixtures.
+
+```bash
+export JAVA_HOME=/path/to/jdk11          # Java 11; see the version table above
+
+# Everything that executes: signature logic + the transparent-proxy contract
+mvn -f proxy/pom.xml clean test
+
+# The source-level gate that pins the production route's endpoint options
+bash .github/scripts/check-transport-contract.sh
+
+# The CDK alarm app (Node 22, outside the Maven build)
+cd alarms && npm ci && npx jest && npx cdk synth
+```
+
+The Maven reactor root is `proxy/pom.xml`, so module builds are
+`mvn -f proxy/pom.xml -pl <module>`. Building `proxy/cloudhsm` needs the CloudHSM JCE rpm installed
+locally; CI compiles it without running its tests.
+
+**Read the test count, not the green tick.** Only `proxy/core` and `proxy/test` execute tests — the
+other modules build with `-DskipTests`, so a test added to them silently never runs. This has
+already bitten: a `.gitignore` pattern once excluded a jest config, CI fell back to a transform that
+could not parse TypeScript, and the job reported `Tests: 0 total` while passing locally. The alarms
+job now asserts the assertion *count* for exactly that reason.
+
+CI runs **8 jobs**: the two that execute tests (`core`, `dict-v2-contract`), two compile-only builds
+(`simulator`, `cloudhsm`), a shellcheck of the container entrypoint, the transport-contract and KMS
+scope gate, the audit-schema check, and the gating CDK alarms job.
+
+**Every contract assertion here has a negative control** — the guarded thing is removed and the
+check is confirmed to fail *for the right reason*. That habit exists because three gates in this
+repository once passed while the thing they guarded was gone: `grep 'Foo'` happily matched a renamed
+`FooGone`. Assert on *usage*, not on a name fragment.
 
 ## Security
 

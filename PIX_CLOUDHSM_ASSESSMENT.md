@@ -134,16 +134,21 @@ two-HSM-with-quorum shape should not be what runs in production.
 
 A versus B is a real trade, not a formality:
 
-- **A buys enforcement, not just headroom.** The cluster will refuse to use a key that is not
-  replicated, so an unreplicated key cannot be used by accident. That is a safety property no
-  operational rule can fully replace, and it needs no discipline from anyone.
+- **A buys enforcement, not just headroom, and it closes a race as well as a durability gap.**
+  The cluster refuses to use a key that is not yet on two HSMs, so an under-replicated key cannot
+  be used by accident. That also removes a race AWS documents explicitly: a call using a *newly
+  created* key can be routed to an HSM that does not have it yet, and **fails** — the documented
+  mitigation otherwise being application-level retry. The quorum converts that random failure
+  into a deterministic wait. Neither property needs discipline from anyone.
 - **B needs exactly one operational rule, and it is not the obvious one.** I first wrote that
   rule as "verify `cluster-coverage: full` after any key creation". Measurement showed that check
   **cannot fail**: a key created while the cluster was degraded to one HSM also reports
   `cluster-coverage: "full"`, because `full` means *present on every HSM currently in the
   cluster* — and there was one. Coverage is relative to current membership, not a durability
-  measure. The rule that works is: **verify at least two ACTIVE HSMs before creating or importing
-  a key** — count HSMs, do not read a coverage string. For this workload that is easy to keep:
+  measure. The rule that works has two parts: **verify at least two ACTIVE HSMs before creating or
+  importing a key** — count HSMs, do not read a coverage string — **and confirm a newly created
+  key is usable before relying on it**, because without the quorum a call can be routed to an HSM
+  that does not hold it yet. For this workload both are easy to keep:
   the PSP signing key and the mTLS client key are generated once at provisioning and again only
   at rotation, both planned activities. The exposure B accepts is a key created during a degraded
   window, plus AWS's stated 24-hour window between automatic backups (additional backups are

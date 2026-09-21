@@ -295,6 +295,74 @@ Restoring a second HSM recovered configuration C automatically, in 0.45 s, **wit
 replacement's new ENI IP being added to the client config — the client discovers cluster members
 by itself. Note the replacement arrives on a **new** IP.
 
+### How a joining HSM is synchronised, and what keeps it in sync afterwards
+
+These are **two different mechanisms**, and conflating them leads to the wrong operational
+expectations.
+
+**At join time: a full snapshot, not an incremental catch-up.** AWS documents five events, of
+which only the first is yours:
+
+1. You call `create-hsm`.
+2. CloudHSM takes a backup of an **existing** HSM in the cluster.
+3. It **restores that backup onto the new HSM**, which is what puts it in sync.
+4. The existing HSMs **notify the client** that a new HSM exists.
+5. The client connects to the new HSM.
+
+The new HSM is therefore not "catching up" — it is overwritten wholesale with a copy of a peer's
+state. AWS is explicit that the restore "overwrites all other data that might have been on the
+HSM prior to restoration". A backup carries all users (CO, CU, AU), all key material and
+certificates, and the HSM configuration and policies.
+
+Step 4 explains a measured result: after a replacement HSM joined on a **new** ENI IP, signing
+worked with that IP absent from the client config. The cluster **pushes** membership to the
+client; the client does not poll or re-read configuration. Re-running `configure-cli` is only
+needed to give a *fresh* client host an initial contact point.
+
+**The source HSM is read, not modified.** Nothing in the documented flow changes the existing
+HSM — it is the backup source. Cluster expansion is described as cloning "all users, keys, and
+policies from another HSM in the cluster. No additional steps are required on your part."
+
+**After join: token keys are synchronised continuously, and you manage none of it.**
+
+| Key kind | Synchronised across the cluster? |
+|---|---|
+| **Token keys** — persistent, created by generate / import / unwrap | **Yes.** Client-side synchronisation clones them as they are created; server-side synchronisation periodically clones keys to every HSM as a fallback. Requires no management. |
+| **Session keys** — ephemeral, scoped to one session | **No.** They exist on a single HSM and are never replicated. |
+
+The proxy's signing key and mTLS key are token keys addressed by label, so they are covered. Any
+use of session keys would not be.
+
+### The window right after creating a key, and the quorum's second purpose
+
+There is a race here that is easy to miss and that AWS documents plainly: a call using a
+**newly created** key "can get routed to any available HSM in the cluster. **If the call you
+route to an HSM without the key, then the call fails.**" The documented mitigation is
+application-level **retry** on calls made immediately after key creation, because synchronisation
+time varies with cluster workload.
+
+This reframes what the key availability quorum is for. It is not only a durability control — it
+also **removes this race**, by refusing to use a key until it exists on two HSMs. A random
+"routed to an HSM that lacks the key" failure becomes a deterministic wait instead.
+
+So configuration B (quorum disabled) re-accepts that race for newly created keys, in addition to
+the durability exposure already described. For this workload the window is small and confined to
+provisioning and rotation — the signing key and the mTLS key are created once and then used for
+months — but it means configuration B's operational rule has two parts, not one:
+
+> 1. Verify at least two ACTIVE HSMs **before** creating or importing a key.
+> 2. After creating a key, confirm it is usable (and retry) **before** relying on it, rather than
+>    assuming the next call will succeed.
+
+Under configuration A the quorum enforces both of these, which is the substance of "A buys
+enforcement, not merely headroom".
+
+**SDK 3 caveat, for anyone still on it:** `cloudhsm_mgmt_util` talks to HSMs directly, bypassing
+the client daemon, and its configuration is **not** updated dynamically when HSMs are added. User
+management performed with it while the cluster membership changes can leave users unsynchronised.
+Do not add HSMs while it is running. SDK 5's `cloudhsm-cli` does not have this problem, and the
+client reconfigures itself as HSMs come and go — which is what was measured here.
+
 ### `cluster-coverage: full` does not mean what it looks like
 
 This is the trap in this whole area, and it invalidates the obvious safety check.

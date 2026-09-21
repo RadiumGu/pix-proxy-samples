@@ -109,9 +109,75 @@ available on at least 2 HSMs`.
 Losing one drops the cluster below quorum and signing stops completely. To tolerate the loss
 of one HSM while keeping the check enabled, **three HSMs are required**.
 
-The alternative — `--disable-key-availability-check` — is the workaround a single-HSM cluster
-forces on you. Shipping it to production means a key may be used while it exists on only one
-HSM, so losing that HSM loses the key. It should not be used in production.
+### Three configurations, and one of them is strictly dominated
+
+An earlier draft of this document said `--disable-key-availability-check` "should not be used
+in production". That was too strong and is corrected here. The flag gates **use**, not
+replication: AWS documents key synchronisation in SDK 5 as "a fully automatic process", and the
+quorum is a separate runtime condition checked per operation. Disabling it therefore does not
+make keys less replicated — it stops the cluster refusing to use a key it already holds.
+
+The AWS documentation matches the measurement above verbatim, including the failure text:
+*"any attempt to create or use a token key will fail … The key must be available on at least 2
+HSMs before being used."* Note **create or use** — the quorum is re-evaluated against current
+cluster state on every operation, which is why an existing, fully replicated key stopped working
+the moment the cluster dropped to one HSM.
+
+| | HSMs | Quorum | Loses 1 HSM | Monthly, sa-east-1 |
+|---|---|---|---|---|
+| **A** | 3 | enabled | Signing continues (2 remain) | $5,957 |
+| **B** | 2 | disabled | Signing continues (survivor holds the key) | $3,971 |
+| **C** | 2 | enabled | **Total signing outage** | $3,971 |
+
+**C costs exactly what B costs and is strictly worse.** Whatever else is decided, the current
+two-HSM-with-quorum shape should not be what runs in production.
+
+A versus B is a real trade, not a formality:
+
+- **A buys enforcement, not just headroom.** The cluster will refuse to use a key that is not
+  replicated, so an unreplicated key cannot be used by accident. That is a safety property no
+  operational rule can fully replace, and it needs no discipline from anyone.
+- **B needs exactly one operational rule:** never create or import a key while the cluster is
+  degraded, and verify `cluster-coverage: full` after any key creation. For this workload that
+  rule is easy to keep — the PSP signing key and the mTLS client key are generated once at
+  provisioning and again only at rotation, both planned activities. The exposure B accepts is a
+  key created during a degraded window, plus AWS's stated 24-hour window between automatic
+  backups (additional backups are taken on cluster lifecycle events such as adding or removing
+  an HSM).
+- **B is thinner against a double failure.** If the surviving HSM fails before a replacement has
+  synchronised, recovery is from backup. For a static signing key that loses nothing; for keys
+  created since the last backup it loses them.
+
+**Availability Zone placement is part of choosing A.** sa-east-1 has three AZs
+(`sa-east-1a`, `1b`, `1c`), so three HSMs can each sit in their own. Three HSMs across only two
+AZs does **not** tolerate an AZ failure: losing the AZ holding two of them leaves one, which is
+below quorum, and the outage is the same as configuration C.
+
+### Cost, at list price
+
+On-demand list prices for `hsm2m.medium`, retrieved from the AWS Pricing API (service code
+`CloudHSM`), at 730 hours per month. HSM charges only — no EC2, data transfer, or backup, and no
+separate non-production or homologação cluster.
+
+| Region | 2 HSMs | 3 HSMs | Third HSM costs |
+|---|---|---|---|
+| sa-east-1 (São Paulo) — $2.72/HSM/hour | $3,971/mo · $47,654/yr | $5,957/mo · $71,482/yr | **+$1,986/mo · +$23,827/yr** |
+| us-east-1 (N. Virginia) — $1.60/HSM/hour | $2,336/mo · $28,032/yr | $3,504/mo · $42,048/yr | +$1,168/mo · +$14,016/yr |
+
+São Paulo is **70% more expensive per HSM** than N. Virginia, which is the practical region for
+Pix given RSFN connectivity. Whether BCB *requires* the HSM to be in Brazil is not something
+this work established — treat region choice as an open question to confirm, not a settled
+constraint.
+
+Use the AWS Pricing Calculator for an authoritative estimate; the figures above are list prices
+for sizing a decision, not a quote.
+
+### What has NOT been measured
+
+Configuration B's central claim — that with the quorum disabled, deleting one HSM of two leaves
+signing working — is **INFERRED** from the documentation plus the measurements above. It was not
+run. Configurations A and C were measured; B was not. If the decision comes down to B, that one
+experiment is worth an hour of cluster time before committing to it.
 
 Three further operational findings:
 
@@ -162,8 +228,10 @@ Absence here is a scope decision, not an oversight.
 
 Ordered by how much they can hurt.
 
-1. **Cluster sizing.** Three HSMs if the key-availability check stays enabled (§5). This is a
-   cost and architecture decision, and the two-HSM assumption is measurably wrong.
+1. **Cluster sizing.** Two HSMs with the quorum enabled is a total outage on one HSM failure
+   and must not ship (§5). Either three HSMs with the quorum enabled (+$23,827/yr at São Paulo
+   list price, and they must be in three separate AZs), or two with the quorum disabled plus the
+   rule that keys are never created while degraded. The second option has not been measured.
 2. **Certificate revocation checking ships disabled.** The switch exists and is tested, but a
    revoked BCB certificate would currently be accepted. Enabling it requires two facts this
    repository cannot establish: that the trust parameter holds the ICP-Brasil CA rather than a

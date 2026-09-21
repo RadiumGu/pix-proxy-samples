@@ -1,5 +1,10 @@
 # CloudHSM teaching architecture for secure Pix message transport
 
+[![build](https://github.com/RadiumGu/pix-proxy-samples/actions/workflows/build.yml/badge.svg)](https://github.com/RadiumGu/pix-proxy-samples/actions/workflows/build.yml)
+[![License: MIT-0](https://img.shields.io/badge/License-MIT--0-blue.svg)](LICENSE)
+
+**[中文版本 / Chinese version](README.zh-CN.md)**
+
 > ## ⚠️ Maintained scope in this fork
 >
 > This fork maintains **only the AWS CloudHSM path**: XML digital signatures, mTLS, CloudHSM client/container integration, and transparent HTTP proxying. It is a teaching skeleton for the transport and cryptography layer of a Pix integration — **not a complete Pix PSP implementation**.
@@ -75,6 +80,10 @@ this is the actual production route:
 the JCE object is a `CloudHsmRsaPrivateCrtKey` whose `getEncoded()` returns `null`. Signing happens
 inside the FIPS boundary; the proxy only asks for it.
 
+<p align="center">
+  <img src="/images/proxy-cloudhsm-arch.png" width="620" alt="CloudHSM proxy architecture: the application reaches BCB only through the proxy, which signs with a key held in a CloudHSM cluster and streams audit records to Firehose">
+</p>
+
 **Transparency is a correctness requirement, not a nicety.** An XML signature covers the document,
 so *any* mutation of the message between signing and BCB invalidates it — and a mutation on the
 inbound side means signing the wrong bytes. This is where most of the defects found in this
@@ -116,6 +125,39 @@ hardware: `XmlSigner` runs **unmodified** on SDK 5 because JSR-105 routes the `S
 to the CloudHSM provider, so the migration is confined entirely to the TLS half — Netty wants key
 *bytes* and an HSM only ever gives you a *handle*. The recommended way out is in
 [`PIX_CLOUDHSM_ASSESSMENT.md`](PIX_CLOUDHSM_ASSESSMENT.md) section 3.
+
+## The audit path, and the four signals that mean records are at risk
+
+A signed request that reached BCB with no record of it is the worst outcome this proxy can produce,
+so the audit path is built to fail loudly rather than quietly.
+
+The write is registered as an `onCompletion` hook, which runs on **success and failure alike**. That
+placement matters: a transport or TLS failure on the BCB leg aborts the exchange, so a final
+processing step would simply never execute — and the request that *was* signed and *was* sent would
+leave no trace. Note `throwExceptionOnFailure(false)` does not cover this; it suppresses HTTP error
+statuses, while these failures happen below HTTP.
+
+Delivery is asynchronous to keep Firehose off the caller's latency path, with a bounded queue and a
+durable fallback. The fallback is opened with `DSYNC`, because a "durable" spool that returns once
+the bytes are in the page cache is no fallback at all for the crash it exists to survive.
+
+Four stable log tokens mark every way a record can be lost, and the CDK app in `alarms/` turns each
+into a CloudWatch alarm:
+
+| Token | Meaning |
+|---|---|
+| `PIX_AUDIT_SPOOLED` | Delivery failed and the record went to the on-disk fallback. Recoverable, but ship and truncate the spool. |
+| `PIX_AUDIT_QUEUE_FULL` | The async queue was full. Overflow spilled to the spool rather than blocking the caller. |
+| `PIX_AUDIT_NO_RECORD` | An exchange produced no audit record at all. |
+| `PIX_AUDIT_SPOOL_WRITE_FAILED` | **Audit data lost** — neither delivered nor persisted. Any non-zero value is a real loss. |
+
+The alarms also watch Firehose itself with `treatMissingData: BREACHING`, deliberately: "no data" on
+a stream that should always be carrying audit records *is* the outage — the container died, delivery
+stopped, or the stream was deleted. The metric-filter alarms take the opposite setting for the
+opposite reason, since those metrics only produce data points when something is already wrong.
+
+**The alarms are defined, tested and synthesisable, but not deployed.** No stack has been pushed to
+an account. That is an explicit gap, not an implied capability.
 
 ## Before you size the cluster: two HSMs is not a redundant configuration
 

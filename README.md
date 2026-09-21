@@ -46,6 +46,43 @@ targets CloudHSM Client SDK 3 while `hsm1.medium` reached end of support on 2026
 creatable instance type requires SDK 5.9.0+, which in turn requires JDK 17+. Passing the test suite
 is **not** evidence of BCB homologação.
 
+## Before you size the cluster: two HSMs is not a redundant configuration
+
+This is on the front page because it is an early architecture and cost decision, it is
+counter-intuitive, and getting it wrong produces a total outage rather than a degradation.
+
+CloudHSM Client SDK 5 enforces a **key availability quorum**: a key must exist on **at least two
+HSMs** before it may be used, and the check is re-evaluated on every operation. So a two-HSM
+cluster is not redundant — it is the *minimum* at which the check passes. Measured on real
+hardware:
+
+| | HSMs | Quorum | One HSM lost | Measured |
+|---|---|---|---|---|
+| **A** | 3 | enabled (default) | Signing continues — two remain | follows from the quorum rule |
+| **B** | 2 | disabled | **Signing continues** at full speed | 5/5 signatures, 0.38–0.46 s |
+| **C** | 2 | enabled (default) | **Total signing outage** | 3/3 failures, 87.2 s each |
+
+**Configuration C costs exactly what B costs and is strictly worse.** It is also the shape you get
+by following the obvious path, so it is the one to avoid. The failure is slow rather than fast —
+87 seconds before the error surfaces — so requests pile up instead of failing quickly, and
+client-side timeouts must be set accordingly whichever configuration you pick.
+
+Two traps worth knowing before reading further:
+
+- **`cluster-coverage: "full"` is not a durability measure.** It means *present on every HSM
+  currently in the cluster*, so a key that exists on a single HSM also reports `full`. To check
+  whether a key is safely replicated, **count ACTIVE HSMs** — do not read that string.
+- **Two different things are called "quorum".** The key availability quorum counts *HSMs*;
+  quorum authentication (M of N) counts *people*. They are unrelated and appear in the same
+  command output.
+
+Full detail, including the join/synchronisation mechanism, AZ placement, audit coverage and the
+measured operational sequencing traps, is in
+[Cluster high availability](README-CloudHSM.md#cluster-high-availability-how-to-size-it-and-the-setting-that-decides-everything)
+and [Two different things are called "quorum"](README-CloudHSM.md#two-different-things-are-called-quorum-and-conflating-them-is-a-real-hazard).
+The cost comparison for two versus three HSMs is in
+[`PIX_CLOUDHSM_ASSESSMENT.md`](PIX_CLOUDHSM_ASSESSMENT.md).
+
 ### Where things live
 
 | Path | Purpose |
@@ -54,6 +91,7 @@ is **not** evidence of BCB homologação.
 | `proxy/test` | Local BCB simulator and the DICT v2 transport contract tests — **its tests run in CI** |
 | `proxy/cloudhsm` | The CloudHSM proxy itself. Compiles in CI, but its tests do not run there (it needs the CloudHSM JCE rpm) |
 | `proxy/kms` | Historical, unsupported, kept out of CI by an explicit guard |
+| `alarms/` | CDK app for the audit alarms. Deliberately **outside** the Maven reactor so the Java build gains no Node dependency; its `cdk synth` and template assertions are a gating CI job |
 | `.github/scripts/check-transport-contract.sh` | Source-level gate pinning the production route's endpoint options |
 | `tools/generate_architecture_diagram.py` | Regenerates the architecture diagrams from the official AWS icon set |
 

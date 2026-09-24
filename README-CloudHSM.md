@@ -478,11 +478,13 @@ above extends that to a trust anchor by **measurement** rather than by analogy: 
 **current membership**, not to any durability or redundancy target. An anchor reported `full` while the
 cluster is degraded sits on however many HSMs exist — possibly one.
 
-**And the obvious way to check membership does not work.** `cluster hsm-info` returns `vendor`, `model`,
-`serial-number`, firmware versions and `fips-state` — it has **no HSM-ID field**. So "count ACTIVE HSMs
-first, then read `cluster-coverage`" cannot be done from the client alone; the count must come from the
-control plane (`describe-clusters`), or from counting `serial-number` entries. Worth knowing before
-writing a runbook step that assumes the client can answer it.
+**The client can count HSMs but cannot name them.** `cluster hsm-info` returns `vendor`, `model`,
+`serial-number`, firmware versions and `fips-state` — it has **no HSM-ID field**. So counting ACTIVE
+HSMs from the client works (count the entries, or the `serial-number` values), but anything that needs
+the **HSM ID** — a CloudWatch dimension, a `delete-hsm` call, correlating a per-HSM metric back to an
+instance — must come from the control plane (`describe-clusters`). That matters for the per-HSM
+divergence alarm described later in this document, whose metric dimension is the HSM ID: the alarm is
+defined against control-plane identifiers, not against anything the client reports.
 
 **Also worth knowing before adopting mTLS for the HSM channel**, from AWS documentation rather than
 measured here: the feature exists **only on `hsm2m.medium`** (the only creatable type anyway, so not a
@@ -570,6 +572,54 @@ other thing a join has to carry.
 This completes the operational rule for configuration B: count ACTIVE HSMs before creating a key,
 confirm the new key is usable before relying on it, and alarm on per-HSM key-count divergence so
 a synchronisation failure is visible rather than discovered by a failing signature.
+
+#### The same question for USERS and POLICIES, where the answer is worse
+
+Everything above is about a **key** created inside the join window, and it has a reassuring shape: the
+snapshot misses the key, and server-side synchronisation eventually carries it across. **That fallback
+does not exist for users or policies.** This section previously answered the mid-join question for keys
+only, which made the situation look better than it is.
+
+AWS states it without qualification: *"Unlike keys, there is **no server-side mechanism** to synchronize
+HSM users across the cluster"*, and *"Users and policies (such as mTLS settings) are **not automatically
+resynchronized**."* The CLI's synchronisation is **best-effort at the moment you run the command**, to
+the HSMs it can reach then.
+
+So trace what happens to a user created while an HSM is joining:
+
+1. The join backup is taken. It contains the keys, users and policies that exist **at that instant**.
+2. You create a user. The CLI pushes it to the HSMs currently in the cluster. The joining HSM is not
+   one of them — it is not ACTIVE yet, and it is about to be overwritten by the restore anyway.
+3. The restore completes. The new HSM now holds the snapshot from step 1, which does **not** contain
+   the user from step 2.
+4. Nothing ever fixes this. There is no periodic user cloning to notice the difference.
+
+The result is a **permanent** divergence: the user exists on the old HSMs and not on the new one, and
+the cluster will keep operating that way until somebody repairs it by hand. A client that happens to
+route that user's login to the new HSM fails to authenticate; one that routes elsewhere succeeds. The
+same trace applies to an mTLS trust anchor registered during the window, because a trust anchor is a
+policy object.
+
+**So the operational rule is not symmetric with keys, and this is the part worth telling a customer:**
+
+> A key created during a join catches up on its own. A **user or policy** created during a join does
+> **not**. Do not perform user administration, or register or deregister an mTLS trust anchor, while an
+> HSM is joining. Add the HSM, wait for it to reach ACTIVE, then make the change.
+
+**Detection, if it happened anyway.** `user list` reports a per-user `cluster-coverage`, and a user
+present on only some HSMs shows `"cluster-coverage": "inconsistent"` rather than `"full"` — that string
+is the signal. For trust anchors the equivalent is `cluster mtls list-trust-anchors`, whose per-anchor
+`cluster-coverage` is `full` only when every current HSM has it. Both are measured to exist; see the
+mTLS policy section above for what was and was not verified about repairing them.
+
+**Repair is documented for users and unresolved for anchors.** For a user, AWS gives an explicit
+procedure: finish the operation you started — `user delete` under both roles if it should not exist, or
+`user create` again if it should — and repair the **admin account first** if the admin itself is
+inconsistent, because you need a consistent admin to fix anyone else. For a trust anchor the documented
+advice is to re-run the registration, but this repository **measured** that re-registering an existing
+anchor is refused with `"Invalid Certificate: Trust anchor already exists."` on a healthy cluster, and
+could not test the genuinely-diverged case. Treat anchor repair as an open question, which is another
+reason not to create the divergence in the first place.
 
 ### `cluster-coverage: full` does not mean what it looks like
 

@@ -385,11 +385,100 @@ months — but it means configuration B's operational rule has two parts, not on
 Under configuration A the quorum enforces both of these, which is the substance of "A buys
 enforcement, not merely headroom".
 
+**What synchronisation does NOT cover: users and policies, mTLS settings among them.** The key
+synchronisation above is a *server-side* mechanism. For users and policies there is **no server-side
+mechanism at all** — AWS states it plainly: *"Unlike keys, there is no server-side mechanism to
+synchronize HSM users across the cluster."* The CLI performs **best-effort** synchronisation of user
+and policy operations, *"but inconsistencies can occur if an operation partially fails"*, and
+resolving them **may require manual intervention**. Detection is `user list`, which shows the
+inconsistency.
+
+This has a consequence specific to this repository, because **mTLS settings are a policy, not a
+key** — AWS names them as the example: *"Users and policies (such as mTLS settings) are not
+automatically resynchronized."*
+
+**First, keep two different mTLS mechanisms apart, because they are easy to conflate and this
+document nearly did.** `cluster mtls` protects the **client-to-HSM** channel: an admin registers a
+trust anchor on the HSMs, each SDK is configured with a client key and certificate chain, and
+enforcement can then be set cluster-wide. Handoff gate 7.1 is a **different** mTLS: the
+**proxy-to-BCB** leg, where the proxy presents an ICP-Brasil client certificate to the RSFN and the
+private key ideally never leaves the HSM. Closing 7.1 has nothing to do with `cluster mtls`, and
+enabling `cluster mtls` does not advance it. They share a name and nothing else.
+
+**What the policy-sync gap means for `cluster mtls`.** Trust anchors and the enforcement level are
+in the category that does **not** self-heal. A partially failed registration leaves some HSMs
+without the anchor indefinitely, and no amount of waiting fixes it. AWS gives both the detection and
+the repair:
+
+| Step | Command | What to look for |
+|---|---|---|
+| Detect | `cluster mtls list-trust-anchors` | each anchor's `cluster-coverage`; anything other than `full` means it is missing from some HSMs |
+| Repair a missing anchor | `cluster mtls register-trust-anchor --path <cert>` | re-running finishes the incomplete operation — it is idempotent, not additive |
+| Repair a lingering anchor | `cluster mtls deregister-trust-anchor --certificate-reference <ref>` | finishes an incomplete removal |
+
+**But `cluster-coverage: full` is measured to be weaker than it reads, and that applies here too.**
+This repository measured `cluster-coverage: "full"` on a **single-HSM** cluster: coverage is relative
+to **current membership**, not to any durability or redundancy target. So an anchor reported `full`
+while the cluster is degraded is present on however many HSMs happen to exist — possibly one — and
+adding an HSM later does not re-run the check. The operational rule is the same one the key
+durability section arrives at: **count ACTIVE HSMs first, then read `cluster-coverage`.** Neither
+number means anything without the other.
+
+**Two hard constraints on `cluster mtls set-enforcement` worth knowing before an operator plans a
+change window**, both from AWS's setup page rather than from measurement here:
+
+1. You must be logged in as the **default admin whose username is literally `admin`** — not merely
+   some user holding the admin role — and the CLI must **already be running over an mTLS
+   connection**. That second requirement is a deliberate interlock: it stops you locking yourself out
+   by enforcing mTLS from a connection that could not satisfy it.
+2. *"After you enforce mTLS usage in the cluster, all existing non-mTLS connections will be
+   dropped."* Every client not yet configured with a key and certificate chain loses access at that
+   instant, so enforcement is a **fleet-wide cutover**, not an incremental tightening.
+
+Also relevant if mTLS is ever adopted for the HSM channel: the feature exists **only on
+`hsm2m.medium`** (which is the only creatable type anyway, so this is not a constraint in practice),
+it is **not supported for CloudHSM key stores used with AWS KMS**, a cluster holds at most **two**
+trust anchors, and a chain may be at most **6980 bytes**. The two-anchor limit is what makes trust
+anchor rotation a sequencing problem: with both slots occupied, a third cannot be registered, so a
+slot must be freed before a new anchor can go in.
+
+**How the automatic key resynchronisation actually works, and why it is safe to rely on.** It uses
+the credentials of the **appliance user (AU)**, which exists on every HSM AWS provides and performs
+"cloning and synchronization operations". It holds only two capabilities: it can take a **hash** of
+the objects on an HSM, and it can **extract and insert masked (encrypted) objects**. It cannot read
+plaintext key material and cannot perform cryptographic operations. AWS's own wording: AWS *"cannot
+view or modify your users or keys and cannot perform any cryptographic operations using those
+keys."* That sentence is the citable answer when a PSP's security review asks whether AWS can see
+the signing key that produces its Pix signatures.
+
+**User inconsistency has a repair table, and one ordering rule that will bite an operator.** `user
+list` reports each property plus `cluster-coverage`; a property reading `inconsistent` means the user
+exists with different values on different HSMs. **Fix the admin account first** — AWS is explicit
+that if the admin itself is inconsistent you must repair it, logging in and repeating until it is
+consistent, before using that admin to repair anyone else. Then, per property:
+
+| `user list` shows | What happened | Repair |
+|---|---|---|
+| `role` inconsistent | Two SDKs created the same username at the same time with different roles | **Not repairable in place.** `user delete` under **both** roles, then `user create` with the intended role |
+| `cluster-coverage` inconsistent | A `user create` or `user delete` partially succeeded | Finish the operation you started — delete under both roles, or re-create |
+| `locked` inconsistent or `true` | The user authenticated with a wrong password against only some HSMs | `user change-password`; if MFA is on, disable it first with `user change-mfa token-sign --disable` |
+| `mfa` status inconsistent | An MFA operation completed on only some HSMs | Disable MFA, reset the password, then have the user re-enable MFA with a signed token and a public key PEM |
+
+For this workload the exposure is narrow — the proxy uses one crypto user created once during
+provisioning — but the `role` row is worth internalising: it is the one inconsistency with **no
+in-place repair**, and its stated cause is two SDKs racing on the same username. Provision users from
+one place, serially.
+
 **SDK 3 caveat, for anyone still on it:** `cloudhsm_mgmt_util` talks to HSMs directly, bypassing
 the client daemon, and its configuration is **not** updated dynamically when HSMs are added. User
 management performed with it while the cluster membership changes can leave users unsynchronised.
-Do not add HSMs while it is running. SDK 5's `cloudhsm-cli` does not have this problem, and the
-client reconfigures itself as HSMs come and go — which is what was measured here.
+Do not add HSMs while it is running. SDK 5's `cloudhsm-cli` does not have *that particular* problem
+— the client reconfigures itself as HSMs come and go, which is what was measured here — but note
+what that does and does not fix. **This document previously said SDK 5 "does not have this problem",
+which read as though user desynchronisation were an SDK 3 defect. It is not.** Dynamic
+reconfiguration is a client-discovery property; user and policy synchronisation is best-effort on
+**both** SDKs, with no server-side fallback on either. SDK 5 removes the stale-configuration cause,
+not the failure mode.
 
 ### A key created while a new HSM is joining
 

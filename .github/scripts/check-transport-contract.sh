@@ -338,7 +338,12 @@ fi
 # Seguranca do Pix section 2 requires respecting DNS TTL; the JVM applies a fixed cache
 # instead of the record's TTL, and caches FOREVER when a security manager is installed.
 # ---------------------------------------------------------------------------
-for pin in 'keepAlive(true)' 'producerPoolMaxActive(' 'producerPoolMinEvictableIdle('; do
+# producerPoolMaxTotal, not producerPoolMaxActive: the option was renamed in Camel 3.18 and
+# maxActive does not exist there at all. Measured with javap against camel-netty-3.18.6. The
+# rename also widened the meaning - commons-pool 2's maxTotal caps idle plus active, where
+# commons-pool 1's maxActive capped only active - so this gate would have gone red on the
+# upgrade even if the intent was unchanged. It did, which is the gate working.
+for pin in 'keepAlive(true)' 'producerPoolMaxTotal(' 'producerPoolMinEvictableIdle('; do
   if ! printf '%s' "$CHECK_ROUTE_CODE" | grep -qF -- "$pin"; then
     echo "ERROR: $CLOUDHSM_ROUTE no longer configures $pin, so the BCB leg stops reusing" >&2
     echo "       connections and pays a full mutual-TLS handshake - including an HSM" >&2

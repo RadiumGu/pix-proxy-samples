@@ -152,7 +152,14 @@ jobs:
         run: mvn -B -f proxy/pom.xml -pl cloudhsm/jce5 install -DskipTests
       - name: Compile proxy/cloudhsm/proxy - THIS GATES
         if: steps.sdk5.outcome == 'success'
-        run: mvn -B -f proxy/pom.xml -pl cloudhsm/proxy package -DskipTests
+        run: mvn -B -f proxy/pom.xml -pl cloudhsm/proxy package -DskipTests 2>&1 | tee /tmp/quarkus-build.log
+      # Quarkus does NOT fail on a configuration key it does not recognise - it warns and carries on.
+      # During the 1.7 -> 2.13 upgrade two keys had been renamed and were silently inert: one stopped
+      # producing an uber-jar, and one stopped disabling route discovery with nothing failing at all.
+      # A key that fails OPEN changes runtime behaviour behind a green build.
+      - name: No unrecognized Quarkus configuration keys - THIS GATES
+        if: steps.sdk5.outcome == 'success'
+        run: bash .github/scripts/check-quarkus-config-keys.sh /tmp/quarkus-build.log
       # The SDK 5 jar must NOT end up inside the uber-jar: it is code-signed (repackaging
       # invalidates the signature) and architecture-specific (bundling pins the artifact to
       # the build host's architecture, silently). provided scope is what keeps it out, and

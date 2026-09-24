@@ -425,8 +425,17 @@ public class PixCloudHSMProxyRouteBuilder extends EndpointRouteBuilder {
                 // filters them out; see PixHttpHeaderFilterStrategy for the measurement and for why
                 // the hop-by-hop headers stay filtered. Also lives under advanced().
                 .headerFilterStrategy("#" + HEADER_FILTER_STRATEGY)
-                // Pool options live under advanced() in camel-netty-http 3.4.2.
-                .producerPoolMaxActive(BCB_POOL_MAX_ACTIVE)
+                // Pool options live under advanced().
+                //
+                // producerPoolMaxTotal, not producerPoolMaxActive. The option was renamed in Camel
+                // 3.18 - measured, camel-netty-3.18.6 publishes getProducerPoolMaxTotal() and no
+                // maxActive at all - and the rename is NOT only cosmetic. Camel moved from
+                // commons-pool 1 to commons-pool 2, where maxActive became maxTotal and the limit
+                // applies to the WHOLE pool, idle plus active, rather than to active objects alone.
+                // The same number therefore caps slightly more than it did, which is the more
+                // conservative reading of the intent here - a ceiling on concurrent BCB connections -
+                // but it is a behaviour change and not a find-and-replace.
+                .producerPoolMaxTotal(BCB_POOL_MAX_ACTIVE)
                 .producerPoolMinIdle(BCB_POOL_MIN_IDLE)
                 // Must stay BELOW the Keep-Alive timeout BCB advertises. If the pool holds an idle
                 // connection longer than the peer does, the peer closes it first and the next

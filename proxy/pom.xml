@@ -36,8 +36,29 @@
         <maven.compiler.source>${java.version}</maven.compiler.source>
         <maven.compiler.target>${java.version}</maven.compiler.target>
 
-        <quarkus.version>1.7.0.Final</quarkus.version>
-        <camel-quarkus.version>1.0.0</camel-quarkus.version>
+        <!--
+          First leg of the Quarkus upgrade: 1.7 -> the 2.13 platform generation.
+        
+          THE TWO NUMBERS DIFFER ON PURPOSE. camel-quarkus stopped publishing at 2.13.3 - there is
+          no 2.13.9 of it. Measured by resolving the platform BOM: importing
+          io.quarkus.platform:quarkus-camel-bom:2.13.9.Final and requesting camel-quarkus-netty-http
+          with no version yields camel-quarkus-netty-http:2.13.3 and Camel 3.18.6. So this pairing is
+          what the 2.13.9 platform itself ships, not a combination invented here.
+        
+          2.13 IS NOT A RESTING PLACE, and nothing here should be read as saying it is. Quarkus 2.13
+          community maintenance ENDED 2022-11-07 and 2.13 was never an LTS; the current supported LTS
+          is 3.33 (until 2027-03-25). This leg exists because the documented path is per-minor and
+          1.7 -> 3.x in one jump is not a supported move: OpenRewrite covers 1.x -> 2.x, and the
+          `quarkus update` CLI covers 2.x -> 3.x. Stopping here leaves the application on a stream
+          with no security fixes, which is where it already was - the gain is that the SECOND leg
+          now has tooling, and that javax.* -> jakarta.* (which lands in Quarkus 3.0, not here) is
+          the only large remaining item.
+        
+          Raising java.version to 17 is unblocked by finishing that second leg - Quarkus 1.7 could
+          not read major-61 class files at all. See the comment on java.version.
+        -->
+        <quarkus.version>2.13.9.Final</quarkus.version>
+        <camel-quarkus.version>2.13.3</camel-quarkus.version>
 
         <aws.bom.version>2.13.0</aws.bom.version>
         <!--
@@ -201,8 +222,18 @@
                 <version>1.0.0</version>
             </dependency>
 
+            <!--
+              io.quarkus.PLATFORM, not io.quarkus. Quarkus 2.0 moved the aggregate BOMs to the
+              io.quarkus.platform groupId; io.quarkus:quarkus-bom still exists as the core BOM, so
+              leaving the old groupId here would resolve and then manage a NARROWER set of artifacts
+              than before - a silent downgrade of dependency management rather than an error.
+
+              Both BOMs are pinned to the same platform version. quarkus-camel-bom is the member BOM
+              that manages the Camel extension versions, which is why camel-quarkus-netty-http is
+              declared without a version in the modules that use it.
+            -->
             <dependency>
-                <groupId>io.quarkus</groupId>
+                <groupId>io.quarkus.platform</groupId>
                 <artifactId>quarkus-bom</artifactId>
                 <version>${quarkus.version}</version>
                 <type>pom</type>
@@ -210,9 +241,9 @@
             </dependency>
 
             <dependency>
-                <groupId>org.apache.camel.quarkus</groupId>
-                <artifactId>camel-quarkus-bom</artifactId>
-                <version>${camel-quarkus.version}</version>
+                <groupId>io.quarkus.platform</groupId>
+                <artifactId>quarkus-camel-bom</artifactId>
+                <version>${quarkus.version}</version>
                 <type>pom</type>
                 <scope>import</scope>
             </dependency>

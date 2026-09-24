@@ -172,6 +172,28 @@
                 <groupId>io.quarkus</groupId>
                 <artifactId>quarkus-maven-plugin</artifactId>
             </plugin>
+            <!--
+              Not installed into the local repository, deliberately.
+
+              Quarkus 2.x renames the jar plugin's output to *.jar.original when building an uber-jar,
+              leaving no main artifact, so `mvn install` fails with "did not assign a main file to the
+              project but it has attachments". Measured on 2.13.9.Final.
+
+              The alternative, quarkus.package.add-runner-suffix=false, does install cleanly - also
+              measured - but renames the artifact and the "-runner" name is referenced by the
+              Dockerfile, the CI no-bundling gate, that gate's negative control, and the docs.
+
+              Skipping install is the smaller change AND the more accurate statement: this module is a
+              deployable APPLICATION, and nothing in the reactor depends on it (checked across every
+              pom, not assumed). A local-repository copy would have no consumer.
+            -->
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-install-plugin</artifactId>
+                <configuration>
+                    <skip>true</skip>
+                </configuration>
+            </plugin>
         </plugins>
     </build>
 </project>

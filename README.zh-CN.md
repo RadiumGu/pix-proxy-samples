@@ -116,8 +116,8 @@ AWS CloudHSM —— **维护中的教学路径** | AWS KMS —— **历史遗留
 | Netty | 4.1.138.Final | 更早的固定版本带有请求走私告警（CWE-444）；4.1.118 仍存在 CVE-2025-58056 |
 | netty epoll native | `linux-x86_64` **和** `linux-aarch_64` | 现已同时声明两者。若只声明其一，应用会在另一架构上启动即挂——已实测，在 JDK 11 和 17 上表现一致 |
 | netty-tcnative | 2.0.84.Final，`linux-x86_64-fedora` **与** `linux-aarch_64-fedora` | **两个架构都有。** 名字的不对称是刻意的:实测 2.0.84.Final 上并**没有**发布 plain `linux-aarch_64`。它是 OpenSSL provider，**无法承载 BCB 的 mTLS 密钥**——OpenSSL 需要密钥字节，而 HSM 密钥没有 |
-| Quarkus | 1.7.0.Final | **自 2020 年起不再受支持**——没有安全修复。实测：它在 JDK 17 上确实能*启动*，`Total 3 routes, of which 3 are started`。文档给出的升级路径是 1.7 → 2.13+ → 3.x → LTS |
-| Camel Quarkus | 1.0.0 | 带来 `camel-netty-http`，它按 BCB 的要求使用 HTTP/1.1。在当前 Camel 中仍然存在 |
+| Quarkus | **2.13.9.Final** | **第一段已完成，但仍不受支持。** 2.13 的社区维护于 **2022-11-07** 结束，且它从来不是 LTS；当前的 LTS 是 **3.33**（支持到 2027-03-25）。剩下的一段是 2.13 → 3.x，`quarkus update` 覆盖该区间，并会带来 `javax.*` → `jakarta.*` 改名 |
+| Camel Quarkus | **2.13.3**（Camel **3.18.6**） | 这是实际存在的最高版本——camel-quarkus 没有发布过 2.13.4 及以后，所以把它与 Quarkus 2.13.9 配对，正是平台 BOM 自身所发布的组合，而非此处臆造。仍然带来 `camel-netty-http` 及其 HTTP/1.1 |
 | CloudHSM SDK 5 | 5.18.0-1 rpm，经 SHA-256 校验 | **已是当前版本，不再是阻塞项。** 那四行 SDK 3 代码已移除，provider 改为 `CloudHsmProvider`。该 jar 不在 Maven Central 上，由 `cloudhsm/jce5` 从 rpm 中解包取得，并且是 **`provided`** 作用域——绝不打包进制品，因为它有代码签名且与架构绑定 |
 | Node (alarms app only) | 22 | 用于 CDK 告警应用，在 Maven 构建之外 |
 

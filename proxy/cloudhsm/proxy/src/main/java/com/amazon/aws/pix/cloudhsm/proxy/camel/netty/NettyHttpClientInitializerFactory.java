@@ -74,7 +74,9 @@ public class NettyHttpClientInitializerFactory extends ClientInitializerFactory 
 
         pipeline.addLast("http", new HttpClientCodec());
 
-        List<ChannelHandler> encoders = producer.getConfiguration().getEncoders();
+        // getEncoders() returns a String in Camel 3.18 - the URI-reference form. The list moved
+        // behind getEncodersAsList(). Measured with javap against camel-netty-3.18.6.jar.
+        List<ChannelHandler> encoders = producer.getConfiguration().getEncodersAsList();
         for (int x = 0; x < encoders.size(); x++) {
             ChannelHandler encoder = encoders.get(x);
             if (encoder instanceof ChannelHandlerFactory) {
@@ -84,7 +86,8 @@ public class NettyHttpClientInitializerFactory extends ClientInitializerFactory 
             pipeline.addLast("encoder-" + x, encoder);
         }
 
-        List<ChannelHandler> decoders = producer.getConfiguration().getDecoders();
+        // Same rename as the encoders above: getDecoders() is now the String form.
+        List<ChannelHandler> decoders = producer.getConfiguration().getDecodersAsList();
         for (int x = 0; x < decoders.size(); x++) {
             ChannelHandler decoder = decoders.get(x);
             if (decoder instanceof ChannelHandlerFactory) {

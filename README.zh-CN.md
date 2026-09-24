@@ -40,6 +40,7 @@ AWS CloudHSM —— **维护中的教学路径** | AWS KMS —— **历史遗留
 | [`PIX_CLOUDHSM_ASSESSMENT.md`](PIX_CLOUDHSM_ASSESSMENT.md) | 面向决策者的验证评估:在真实 CloudHSM 硬件上测到了什么、推荐哪条传输路径及为何排除其余、双 HSM 可用性发现、以及上生产前的开放关卡 | 你在判断是否以及如何采用这套方案,而不是在实现它 |
 | [`VERIFICATION.md`](VERIFICATION.md) | 独立验证记录:复现了哪些缺陷、修了哪些、每个修复用什么测试过、哪些仍是限制 | 你想要某个主张背后的证据,而不是主张本身 |
 | [`VERIFICATION.en.md`](VERIFICATION.en.md) | 同一份记录的英文版。`VERIFICATION.md` 仍是权威副本——要更正就改它。CI 的 `verification-parity` 作业会在标题、命令或任何测量值两边分歧时让构建失败 | 你需要这些证据但不读中文 |
+| [`CLOUDHSM_ADD_HSM_FAQ.md`](CLOUDHSM_ADD_HSM_FAQ.md) | 面向客户的新增 HSM 问答:在新 HSM 加入期间创建的密钥、用户、mTLS 信任锚各会怎样。全部真机实测,附命令原始输出 | 客户问扩容期间正在进行的变更会怎样 |
 | [`CLOUDHSM_BCB_V2_HANDOFF.zh-CN.md`](CLOUDHSM_BCB_V2_HANDOFF.zh-CN.md) · [English](CLOUDHSM_BCB_V2_HANDOFF.md) | 工程交接:外部 BCB 基线、传输契约的证据表、需要继续做的工作,以及**明确尚未解决的 homologação 关卡** | 你要接手这项工作,或需要一份诚实的「哪些尚未证明」清单 |
 | [`CONTRIBUTING.md`](CONTRIBUTING.md) | 贡献与安全问题上报流程 | 报告问题或提 PR |
 | [`CODE_OF_CONDUCT.md`](CODE_OF_CONDUCT.md) | 项目行为准则 | 参与本项目 |

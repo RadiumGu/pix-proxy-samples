@@ -592,10 +592,32 @@ So trace what happens to a user created while an HSM is joining:
    one of them — it is not ACTIVE yet, and it is about to be overwritten by the restore anyway.
 3. The restore completes. The new HSM now holds the snapshot from step 1, which does **not** contain
    the user from step 2.
-4. Nothing ever fixes this. There is no periodic user cloning to notice the difference.
+4. Nothing fixes this. There is no periodic user cloning to notice the difference.
+
+**This is MEASURED, not deduced.** Ten users were created thirty seconds apart across a join window and
+their coverage read once the new HSM was ACTIVE. The snapshot instant is visible in the results:
+
+```
+create-hsm issued at epoch 1790239945; second HSM ACTIVE at t+313s
+  u01  t+4s    -> "full"            u06  t+157s  -> "inconsistent"
+  u02  t+34s   -> "full"            u07  t+188s  -> "inconsistent"
+  u03  t+65s   -> "inconsistent"    u08  t+218s  -> "inconsistent"
+  u04  t+96s   -> "inconsistent"    u09  t+249s  -> "inconsistent"
+  u05  t+126s  -> "inconsistent"    u10  t+280s  -> "inconsistent"
+```
+
+Users created in the first ~34 s were in the snapshot; everything from ~65 s on was not. **The bracket
+is one observation on one cluster and must not be used as a safe window** — the timing is undocumented.
+
+And it does not heal. **879 seconds (14.6 min) after the new HSM reached ACTIVE**, six diverged users
+were still `inconsistent`, while two repaired by hand in the same interval were `full` — so time is not
+the variable, the repair is. A trust anchor registered late in the same window diverged identically,
+which is also how the genuinely-diverged anchor needed for the repair test below was manufactured.
 
 The result is a **permanent** divergence: the user exists on the old HSMs and not on the new one, and
-the cluster will keep operating that way until somebody repairs it by hand. A client that happens to
+the cluster will keep operating that way until somebody repairs it by hand. Because client connections
+are load-balanced across HSMs, the symptom is an **intermittent** authentication failure — the same
+login succeeds or fails depending on which HSM it lands on. A client that happens to
 route that user's login to the new HSM fails to authenticate; one that routes elsewhere succeeds. The
 same trace applies to an mTLS trust anchor registered during the window, because a trust anchor is a
 policy object.
@@ -612,14 +634,37 @@ is the signal. For trust anchors the equivalent is `cluster mtls list-trust-anch
 `cluster-coverage` is `full` only when every current HSM has it. Both are measured to exist; see the
 mTLS policy section above for what was and was not verified about repairing them.
 
-**Repair is documented for users and unresolved for anchors.** For a user, AWS gives an explicit
-procedure: finish the operation you started — `user delete` under both roles if it should not exist, or
-`user create` again if it should — and repair the **admin account first** if the admin itself is
-inconsistent, because you need a consistent admin to fix anyone else. For a trust anchor the documented
-advice is to re-run the registration, but this repository **measured** that re-registering an existing
-anchor is refused with `"Invalid Certificate: Trust anchor already exists."` on a healthy cluster, and
-could not test the genuinely-diverged case. Treat anchor repair as an open question, which is another
-reason not to create the divergence in the first place.
+**Repair is now measured for both, and the anchor case had a surprise.** For a user, AWS gives an
+explicit procedure and it works cleanly: finish the operation you started — `user delete` under both
+roles if it should not exist, or `user create` again if it should — and repair the **admin account
+first** if the admin itself is inconsistent, because you need a consistent admin to fix anyone else.
+Measured: re-running `user create` on a diverged user returned `error_code 0` and moved coverage
+`inconsistent` → `full`.
+
+For a trust anchor, an earlier round of this work could only test a healthy cluster, saw
+`"Invalid Certificate: Trust anchor already exists."`, and recorded anchor repair as an open question.
+**That question is now answered by manufacturing a genuine divergence inside a join window, and the
+answer reverses the earlier reading: the documented repair WORKS, while reporting `error_code 1`.**
+
+```
+before:  "certificate-reference": "0x02",  "cluster-coverage": "inconsistent"
+  cluster mtls register-trust-anchor --path ca2.crt
+  -> { "error_code": 1,
+       "data": "Certificate error received from Hsm. Trust anchor is already installed in Hsm." }
+after:   "certificate-reference": "0x02",  "cluster-coverage": "full"
+```
+
+The error comes from the HSM that already held the anchor; the HSM missing it received it. So an
+operator who treats the non-zero code as failure will conclude the repair did not happen. **Verify an
+anchor repair by re-reading `cluster mtls list-trust-anchors`, never by the exit code.** The two
+situations do produce different message text — `"Invalid Certificate: Trust anchor already exists."`
+when every HSM already has it, versus `"Certificate error received from Hsm..."` when a repair was
+performed — but that distinction is undocumented and should not be relied on. Deregister-then-register
+was also measured to work and returns `error_code 0` both times, at the cost of a window with the
+anchor absent and of one of only two anchor slots.
+
+This is written up for a customer audience, with the measurement timeline and the full command output,
+in [`CLOUDHSM_ADD_HSM_FAQ.md`](CLOUDHSM_ADD_HSM_FAQ.md).
 
 ### `cluster-coverage: full` does not mean what it looks like
 

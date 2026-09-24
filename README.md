@@ -106,29 +106,56 @@ Two measured corrections worth knowing if you touch this code: `bridgeEndpoint=t
 by itself preserve path and query, and clearing `HTTP_QUERY` alone does not drop the query because
 `HTTP_RAW_QUERY` is a second source.
 
-## Versions: what is pinned, and the one constraint that blocks deployment
+## Versions: what to target, and what the build pins today
 
-Read from `proxy/pom.xml` and `.github/workflows/build.yml`, not from prose — these are the values
-the build actually uses.
+The first table is a recommendation. The second is read from `proxy/pom.xml` and
+`.github/workflows/build.yml` rather than from prose, so it is what the build actually uses. They
+differ, and that difference is the size of the migration.
 
-| Component | Pinned | Why it is pinned there |
+### What a new deployment should target
+
+Written for **Client SDK 5** and a current JDK, because SDK 3 cannot reach a creatable HSM type at
+all. Everything in this table is either AWS's documented requirement or measured here.
+
+| Component | Target | Why this one |
 |---|---|---|
-| Java | **11** (`temurin` in CI) | What CloudHSM Client SDK 3 supports — and what **SDK 5 has stopped supporting**: 5.17.1 was the last release to support OpenJDK 11, so this pin cannot survive the migration |
-| Quarkus | 1.7.0.Final | The generation `camel-quarkus` 1.0.0 targets |
-| Camel Quarkus | 1.0.0 | Brings `camel-netty-http`, which speaks HTTP/1.1 as BCB requires |
-| Netty | **4.1.138.Final** | Earlier pins carried request-smuggling advisories (CWE-444); 4.1.118 still had CVE-2025-58056 |
-| netty-tcnative | 2.0.84.Final, `linux-x86_64-fedora` | Paired with that Netty; **x86_64 only**, so another architecture fails at startup |
-| Jackson | 2.15.4 | Security floor; both BOMs are imported **before** `quarkus-bom` so they win |
-| CloudHSM SDK 3 | **3.4.4-1** rpm, SHA-256 verified | The version this code targets |
+| **CloudHSM Client SDK** | **5** (`cloudhsm-cli` + `cloudhsm-jce`, measured on **5.18.0**) | SDK 3 does not support `hsm2m.medium`, and that is the only creatable HSM type. Not a preference — a hard requirement |
+| **Java** | **21**, floor **17** | The SDK 5 JCE provider supports OpenJDK **17, 21 and 25 only**. 21 is the current mainstream LTS with long Corretto support; 17 is the floor, 25 is fresher than a payment system needs |
+| HSM type | `hsm2m.medium`, FIPS mode | The only creatable type; `hsm1.medium` reached end of support **2026-03-31** |
+| mTLS to BCB | JDK/JSSE provider + [`HsmX509KeyManager`](proxy/core/src/main/java/com/amazon/aws/pix/core/tls/HsmX509KeyManager.java) | Lets the client key stay **non-extractable**. `SslProvider.OPENSSL` cannot be used: it needs key bytes an HSM does not give |
+| Cluster size | **3 HSMs**, or 2 with the availability check disabled | SDK 5 refuses to use a key present on fewer than two HSMs. See [`README-CloudHSM.md`](README-CloudHSM.md) |
+
+**SDK 5 has a support half-life, so this is a calendar entry rather than a decision.** From SDK 5.17
+AWS supports *three prior minor versions and one year from release*, and disables download links for
+older versions. This repository pins its rpm by SHA-256, which turns that into a **timed** failure:
+when the link goes the hash is still correct and the file is gone. See the operational calendar in
+[`README-CloudHSM.md`](README-CloudHSM.md).
+
+### What the build pins today
+
+This is the state of the tree, not a recommendation. Two of these are current and the rest are what
+the SDK 3 era left behind.
+
+| Component | Pinned | Status |
+|---|---|---|
+| Java | **11** (`temurin` in CI) | **Below the target.** SDK 5.17.1 was the last release supporting OpenJDK 11. Measured: the whole reactor builds and all tests pass on **JDK 17** as well |
+| Lombok | **1.18.48** | **Current.** 1.18.12 could not run as an annotation processor on JDK 17 at all — the build failed to *compile*. Floor is 1.18.22 |
+| Jackson | **2.21.2** (LTS line) | **Current.** The previous 2.15.4 is in the range affected by CVE-2026-59888, fixed in 2.18+ |
+| Netty | 4.1.138.Final | Earlier pins carried request-smuggling advisories (CWE-444); 4.1.118 still had CVE-2025-58056 |
+| netty epoll native | `linux-x86_64` **and** `linux-aarch_64` | Both now declared. With one only, the app died at startup on the other architecture — measured, identically on JDK 11 and 17 |
+| netty-tcnative | 2.0.84.Final, `linux-x86_64-fedora` | **Still one architecture.** A `linux-aarch_64` classifier is published, so this is a choice rather than a limit |
+| Quarkus | 1.7.0.Final | **Unsupported since 2020** — no security fixes. Measured: it does *start* on JDK 17, `Total 3 routes, of which 3 are started`. The documented upgrade path is 1.7 → 2.13+ → 3.x → LTS |
+| Camel Quarkus | 1.0.0 | Brings `camel-netty-http`, which speaks HTTP/1.1 as BCB requires. Still present in current Camel |
+| CloudHSM SDK 3 | 3.4.4-1 rpm, SHA-256 verified | **The blocking pin.** What the four SDK-3 lines in `PixCloudHSMProxyRouteBuilder` require |
 | Node (alarms app only) | 22 | For the CDK alarm app, outside the Maven build |
 
-**The blocking constraint.** The code targets CloudHSM Client **SDK 3**, but `hsm1.medium` reached
-end of support on **2026-03-31**, and the only creatable instance type needs **SDK 5.9.0+**, which
-in turn needs **JDK 17+**. So this cannot be deployed as written. The good news, measured on real
-hardware: `XmlSigner` runs **unmodified** on SDK 5 because JSR-105 routes the `Signature` operation
-to the CloudHSM provider, so the migration is confined entirely to the TLS half — Netty wants key
-*bytes* and an HSM only ever gives you a *handle*. The recommended way out is in
-[`PIX_CLOUDHSM_ASSESSMENT.md`](PIX_CLOUDHSM_ASSESSMENT.md) section 3.
+**Why it still cannot be deployed as written.** The four lines binding this code to SDK 3 — two
+`com.cavium.cfm2` imports, `new CaviumProvider()` and `LoginManager.login("PARTITION_1", …)` — need
+their SDK 5 equivalents, and SDK 5 needs JDK 17 or later. What is NOT in the way, measured rather
+than assumed: the XML signing path runs unmodified on SDK 5 (a real ISO 20022 message signed with an
+HSM key, and the signature verified); a non-extractable mTLS key works; and the whole reactor builds
+and tests green on JDK 17. The migration is four lines of provider wiring plus a framework upgrade
+that is overdue on its own merits — not a rewrite of the signing logic.
 
 ## The audit path, and the four signals that mean records are at risk
 

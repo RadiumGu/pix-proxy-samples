@@ -86,22 +86,42 @@ AWS CloudHSM —— **维护中的教学路径** | AWS KMS —— **历史遗留
 
 改这段代码前值得知道的两条实测更正:`bridgeEndpoint=true` **并不**单凭自身就保留路径与查询;清除 `HTTP_QUERY` 也不足以去掉查询,因为 `HTTP_RAW_QUERY` 是第二个来源。
 
-## 版本:钉住了什么,以及那个阻塞部署的约束
+## 版本:应当瞄准什么,以及当前构建钉住了什么
 
-以下取自 `proxy/pom.xml` 与 `.github/workflows/build.yml`,而非文字描述——这些是构建实际使用的值。
+第一张表是建议,第二张表取自 `proxy/pom.xml` 与 `.github/workflows/build.yml`,是构建实际使用的值。两者不同,而这个差额就是迁移的工作量。
 
-| 组件 | 钉住的版本 | 为什么钉在这里 |
+### 新部署应当瞄准的版本
+
+按 **Client SDK 5** 和当前 JDK 编写，因为 SDK 3 根本无法访问到任何可创建的 HSM 类型。本表中的每一项，要么是 AWS 的文档硬要求，要么是在此实测得出。
+
+| Component | Target | Why this one |
 |---|---|---|
-| Java | **11**(CI 用 `temurin`) | CloudHSM Client SDK 3 支持的版本——也是 **SDK 5 已经不再支持**的版本:5.17.1 是最后支持 OpenJDK 11 的发布,所以这个钉住值活不过这次迁移 |
-| Quarkus | 1.7.0.Final | `camel-quarkus` 1.0.0 对应的代次 |
-| Camel Quarkus | 1.0.0 | 提供 `camel-netty-http`,它讲 HTTP/1.1,符合 BCB 要求 |
-| Netty | **4.1.138.Final** | 更早的版本带有请求走私公告(CWE-444);4.1.118 仍有 CVE-2025-58056 |
-| netty-tcnative | 2.0.84.Final,`linux-x86_64-fedora` | 与该 Netty 配对;**仅 x86_64**,其他架构会在启动时失败 |
-| Jackson | 2.15.4 | 安全下限;两个 BOM 都在 `quarkus-bom` **之前**导入,因此生效 |
-| CloudHSM SDK 3 | **3.4.4-1** rpm,校验 SHA-256 | 这份代码所面向的版本 |
-| Node(仅告警应用) | 22 | 用于 CDK 告警应用,在 Maven 构建之外 |
+| **CloudHSM Client SDK** | **5**（`cloudhsm-cli` + `cloudhsm-jce`，实测于 **5.18.0**） | SDK 3 不支持 `hsm2m.medium`，而这是唯一可创建的 HSM 类型。这不是偏好——而是硬性要求 |
+| **Java** | **21**，下限 **17** | SDK 5 的 JCE provider 仅支持 OpenJDK **17、21 和 25**。21 是当前主流 LTS，Corretto 支持周期长；17 是下限，25 则比支付系统所需更新 |
+| HSM type | `hsm2m.medium`，FIPS 模式 | 唯一可创建的类型；`hsm1.medium` 已于 **2026-03-31** 结束支持 |
+| mTLS to BCB | JDK/JSSE provider + [`HsmX509KeyManager`](proxy/core/src/main/java/com/amazon/aws/pix/core/tls/HsmX509KeyManager.java) | 让客户端密钥保持**不可导出**。无法使用 `SslProvider.OPENSSL`：它需要 HSM 不会给出的密钥字节 |
+| Cluster size | **3 个 HSM**，或在关闭可用性检查后用 2 个 | SDK 5 拒绝使用存在于少于两个 HSM 上的密钥。参见 [`README-CloudHSM.md`](README-CloudHSM.md) |
 
-**那个阻塞约束。** 代码面向 CloudHSM Client **SDK 3**,但 `hsm1.medium` 已于 **2026-03-31** 终止支持,而唯一可创建的实例类型需要 **SDK 5.9.0+**,后者又需要 **JDK 17+**。所以它无法按现状部署。好消息来自真实硬件实测:`XmlSigner` 在 SDK 5 上**无需修改**即可运行,因为 JSR-105 会把 `Signature` 操作路由到 CloudHSM provider,所以迁移难点**完全局限在 TLS 那一半**——Netty 要密钥**字节**,而 HSM 只给**句柄**。推荐的解法见 [`PIX_CLOUDHSM_ASSESSMENT.md`](PIX_CLOUDHSM_ASSESSMENT.md) 第 3 节。
+**SDK 5 有支持半衰期，所以这是一个日历条目，而非一项决策。** 从 SDK 5.17 起，AWS 仅支持*此前三个次要版本以及自发布起一年*，并会关闭更旧版本的下载链接。本仓库通过 SHA-256 固定其 rpm，这就把上述情况变成一个**定时**故障：当链接失效时，哈希仍然正确，而文件已不复存在。参见 [`README-CloudHSM.md`](README-CloudHSM.md) 中的运维日历。
+
+### 当前构建实际钉住的版本
+
+这是代码树的当前状态，不是建议。其中两项是当前的，其余都是 SDK 3 时代遗留下来的。
+
+| Component | Pinned | Status |
+|---|---|---|
+| Java | **11**（CI 中为 `temurin`） | **低于目标。** SDK 5.17.1 是最后一个支持 OpenJDK 11 的版本。实测：整个 reactor 在 **JDK 17** 上同样能构建，且所有测试通过 |
+| Lombok | **1.18.48** | **当前。** 1.18.12 在 JDK 17 上根本无法作为注解处理器运行——构建*编译*失败。下限为 1.18.22 |
+| Jackson | **2.21.2**（LTS 线） | **当前。** 此前的 2.15.4 落在受 CVE-2026-59888 影响的版本范围内，该问题在 2.18+ 中修复 |
+| Netty | 4.1.138.Final | 更早的固定版本带有请求走私告警（CWE-444）；4.1.118 仍存在 CVE-2025-58056 |
+| netty epoll native | `linux-x86_64` **和** `linux-aarch_64` | 现已同时声明两者。若只声明其一，应用会在另一架构上启动即挂——已实测，在 JDK 11 和 17 上表现一致 |
+| netty-tcnative | 2.0.84.Final，`linux-x86_64-fedora` | **仍只有一个架构。** 已发布 `linux-aarch_64` 分类器，所以这是一个选择，而非限制 |
+| Quarkus | 1.7.0.Final | **自 2020 年起不再受支持**——没有安全修复。实测：它在 JDK 17 上确实能*启动*，`Total 3 routes, of which 3 are started`。文档给出的升级路径是 1.7 → 2.13+ → 3.x → LTS |
+| Camel Quarkus | 1.0.0 | 带来 `camel-netty-http`，它按 BCB 的要求使用 HTTP/1.1。在当前 Camel 中仍然存在 |
+| CloudHSM SDK 3 | 3.4.4-1 rpm，经 SHA-256 校验 | **阻塞性的固定项。** 这是 `PixCloudHSMProxyRouteBuilder` 中那四行 SDK 3 代码所要求的 |
+| Node (alarms app only) | 22 | 用于 CDK 告警应用，在 Maven 构建之外 |
+
+**为什么它仍然无法按现状部署。** 将这段代码绑定到 SDK 3 的那四行——两处 `com.cavium.cfm2` 导入、`new CaviumProvider()` 以及 `LoginManager.login("PARTITION_1", …)`——需要替换为它们的 SDK 5 等价物，而 SDK 5 需要 JDK 17 或更高版本。哪些**不是**障碍，是实测而非假设得出的：XML 签名路径在 SDK 5 上无需改动即可运行（用 HSM 密钥签署了一条真实的 ISO 20022 报文，并验证了签名）；不可导出的 mTLS 密钥可以工作；整个 reactor 在 JDK 17 上构建并测试全绿。此次迁移是四行 provider 接线加上一次本就该做的框架升级——而不是重写签名逻辑。
 
 ## 审计路径,以及代表「记录有风险」的四个信号
 

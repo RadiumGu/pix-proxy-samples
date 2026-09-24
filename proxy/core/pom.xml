@@ -75,6 +75,35 @@
 					</compilerArgs>
 				</configuration>
 			</plugin>
+
+			<!--
+			  The SAME exports the compiler needs, given to the test JVM as well.
+
+			  They were declared for compilation only, which compiles fine and then throws at RUNTIME on
+			  JDK 17 - measured: three signing tests fail with
+
+			    IllegalAccessError: class Iso20022URIDereferencer cannot access class
+			    com.sun.org.apache.xml.internal.security.signature.XMLSignatureInput (in module
+			    java.xml.crypto)
+
+			  On JDK 11 the tests pass without these flags because that release still permitted the
+			  reflective access; from JDK 17 strong encapsulation denies it and the escape hatch is gone.
+			  So a compile-only declaration made the build look ready for JDK 17 while every signing path
+			  was broken on it.
+
+			  They are passed unconditionally rather than behind a JDK profile: on JDK 11 an unknown
+			  add-exports option for an existing module is accepted and ignored, so one configuration serves
+			  both, and there is no profile to forget to activate.
+
+			  Anything that RUNS this code needs the same flags - see the Dockerfile and
+			  README-CloudHSM.md. A jar that compiles is not a jar that runs.
+			-->
+			<plugin>
+				<artifactId>maven-surefire-plugin</artifactId>
+				<configuration>
+					<argLine>--add-exports java.xml.crypto/com.sun.org.apache.xml.internal.security.signature=ALL-UNNAMED --add-exports java.xml.crypto/org.jcp.xml.dsig.internal.dom=ALL-UNNAMED</argLine>
+				</configuration>
+			</plugin>
 		</plugins>
 	</build>
 

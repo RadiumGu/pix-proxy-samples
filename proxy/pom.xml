@@ -18,7 +18,14 @@
         <camel-quarkus.version>1.0.0</camel-quarkus.version>
 
         <aws.bom.version>2.13.0</aws.bom.version>
-        <lombok.version>1.18.12</lombok.version>
+        <!--
+          Lombok 1.18.12 CANNOT RUN as an annotation processor on JDK 17 - the build fails to COMPILE
+          with IllegalAccessError on JavacProcessingEnvironment, before any test runs. Measured with a
+          control: JDK 11 + 1.18.12 compiles, JDK 17 + 1.18.12 does not, JDK 17 + this version does.
+          JDK 17 support first appeared in 1.18.22, which is the floor; this version also covers
+          JDK 21 and 25, which is where the CloudHSM SDK 5 migration has to go.
+        -->
+        <lombok.version>1.18.48</lombok.version>
 
         <junit.version>4.13.1</junit.version>
         <commons-io.version>2.14.0</commons-io.version>
@@ -64,7 +71,14 @@
         -->
         <netty.version>4.1.138.Final</netty.version>
         <netty-tcnative.version>2.0.84.Final</netty-tcnative.version>
-        <jackson.version>2.15.4</jackson.version>
+        <!--
+          CVE-2026-59888 affects the 2.15.x range and is fixed in 2.18 and later, so the previous
+          2.15.4 pin is not defensible for a payment system. 2.21 is the current LTS line rather than
+          the newest 2.x, which is the right trade for a system that must pass homologação and then run
+          for years. Jackson 3 is released and deliberately not taken: a major version with API changes
+          this repository has no need for.
+        -->
+        <jackson.version>2.21.2</jackson.version>
 
         <!--
           CloudHSM Client SDK 3 (the legacy Cavium JCE provider), pinned as one unit.

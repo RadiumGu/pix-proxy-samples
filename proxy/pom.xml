@@ -139,6 +139,21 @@
                 <version>${netty-tcnative.version}</version>
                 <classifier>linux-x86_64-fedora</classifier>
             </dependency>
+            <!--
+                The aarch64 classifier needs its OWN managed entry: dependencyManagement matches on
+                groupId:artifactId:type:CLASSIFIER, so the entry above does not cover it and the build
+                fails with "version is missing". That is how this entry came to exist, not foresight.
+                
+                The two classifier names are deliberately ASYMMETRIC. Measured against Maven Central at
+                2.0.84.Final: linux-x86_64, linux-x86_64-fedora and linux-aarch_64-fedora are published,
+                and a plain linux-aarch_64 IS NOT. Do not "correct" the asymmetry - it stops resolving.
+            -->
+            <dependency>
+                <groupId>io.netty</groupId>
+                <artifactId>netty-tcnative</artifactId>
+                <version>${netty-tcnative.version}</version>
+                <classifier>linux-aarch_64-fedora</classifier>
+            </dependency>
 
             <dependency>
                 <groupId>com.fasterxml.jackson</groupId>

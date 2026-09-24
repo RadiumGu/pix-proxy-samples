@@ -143,7 +143,7 @@ the SDK 3 era left behind.
 | Jackson | **2.21.2** (LTS line) | **Current.** The previous 2.15.4 is in the range affected by CVE-2026-59888, fixed in 2.18+ |
 | Netty | 4.1.138.Final | Earlier pins carried request-smuggling advisories (CWE-444); 4.1.118 still had CVE-2025-58056 |
 | netty epoll native | `linux-x86_64` **and** `linux-aarch_64` | Both now declared. With one only, the app died at startup on the other architecture — measured, identically on JDK 11 and 17 |
-| netty-tcnative | 2.0.84.Final, `linux-x86_64-fedora` | **Still one architecture.** A `linux-aarch_64` classifier is published, so this is a choice rather than a limit |
+| netty-tcnative | 2.0.84.Final, `linux-x86_64-fedora` **and** `linux-aarch_64-fedora` | **Both architectures.** The names are asymmetric on purpose: measured at 2.0.84.Final, a plain `linux-aarch_64` is **not published**. This is the OpenSSL provider, which **cannot carry the BCB mTLS key** — OpenSSL needs key bytes an HSM has none of |
 | Quarkus | 1.7.0.Final | **Unsupported since 2020** — no security fixes. Measured: it does *start* on JDK 17, `Total 3 routes, of which 3 are started`. The documented upgrade path is 1.7 → 2.13+ → 3.x → LTS |
 | Camel Quarkus | 1.0.0 | Brings `camel-netty-http`, which speaks HTTP/1.1 as BCB requires. Still present in current Camel |
 | CloudHSM SDK 3 | 3.4.4-1 rpm, SHA-256 verified | **The blocking pin.** What the four SDK-3 lines in `PixCloudHSMProxyRouteBuilder` require |

@@ -115,7 +115,7 @@ AWS CloudHSM —— **维护中的教学路径** | AWS KMS —— **历史遗留
 | Jackson | **2.21.2**（LTS 线） | **当前。** 此前的 2.15.4 落在受 CVE-2026-59888 影响的版本范围内，该问题在 2.18+ 中修复 |
 | Netty | 4.1.138.Final | 更早的固定版本带有请求走私告警（CWE-444）；4.1.118 仍存在 CVE-2025-58056 |
 | netty epoll native | `linux-x86_64` **和** `linux-aarch_64` | 现已同时声明两者。若只声明其一，应用会在另一架构上启动即挂——已实测，在 JDK 11 和 17 上表现一致 |
-| netty-tcnative | 2.0.84.Final，`linux-x86_64-fedora` | **仍只有一个架构。** 已发布 `linux-aarch_64` 分类器，所以这是一个选择，而非限制 |
+| netty-tcnative | 2.0.84.Final，`linux-x86_64-fedora` **与** `linux-aarch_64-fedora` | **两个架构都有。** 名字的不对称是刻意的:实测 2.0.84.Final 上并**没有**发布 plain `linux-aarch_64`。它是 OpenSSL provider，**无法承载 BCB 的 mTLS 密钥**——OpenSSL 需要密钥字节，而 HSM 密钥没有 |
 | Quarkus | 1.7.0.Final | **自 2020 年起不再受支持**——没有安全修复。实测：它在 JDK 17 上确实能*启动*，`Total 3 routes, of which 3 are started`。文档给出的升级路径是 1.7 → 2.13+ → 3.x → LTS |
 | Camel Quarkus | 1.0.0 | 带来 `camel-netty-http`，它按 BCB 的要求使用 HTTP/1.1。在当前 Camel 中仍然存在 |
 | CloudHSM SDK 3 | 3.4.4-1 rpm，经 SHA-256 校验 | **阻塞性的固定项。** 这是 `PixCloudHSMProxyRouteBuilder` 中那四行 SDK 3 代码所要求的 |

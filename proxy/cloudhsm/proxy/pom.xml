@@ -115,18 +115,41 @@
             <classifier>linux-aarch_64</classifier>
         </dependency>
 
+        <!--
+          netty-tcnative, BOTH architectures.
+
+          No version on either: a version declared in a module's own <dependencies> beats
+          dependencyManagement outright, so hardcoding it here silently defeated the parent's security
+          override - measured, the parent moved Netty to 4.1.118 while tcnative stayed on 2.0.31 until
+          the line was removed. The version comes from the parent so the pair cannot drift apart.
+
+          The aarch64 classifier is 'linux-aarch_64-FEDORA', and the asymmetry with the x86_64 row is
+          real rather than a typo. Measured against Maven Central at 2.0.84.Final:
+
+            linux-x86_64          published
+            linux-x86_64-fedora   published
+            linux-aarch_64        NOT PUBLISHED
+            linux-aarch_64-fedora published
+
+          So aarch64 has only the fedora flavour. netty-tcnative is the openssl-DYNAMIC build, linked
+          against the host's OpenSSL, which is why flavours exist at all; the -fedora build targets the
+          OpenSSL soname shipped by RHEL-family distributions, which is what this image is built on.
+
+          READ THIS BEFORE RELYING ON tcnative FOR THE BCB mTLS KEY: it cannot carry one. OpenSSL needs
+          the key BYTES - Netty's OpenSslKeyMaterialProvider calls toBIO(key) then
+          SSL.parsePrivateKey() for any key that is not already an OpenSslPrivateKey - and an HSM key's
+          getEncoded() is null. The client leg therefore uses SslProvider.JDK with HsmX509KeyManager.
+          These artifacts remain for the server-side listeners, where the key is a local file.
+        -->
         <dependency>
             <groupId>io.netty</groupId>
             <artifactId>netty-tcnative</artifactId>
-            <!--
-              No version here on purpose. A version declared in a module's own
-              <dependencies> beats dependencyManagement outright, so hardcoding it
-              here silently defeated the parent's security override - measured: the
-              parent moved Netty to 4.1.118 while tcnative stayed on 2.0.31 until
-              this line was removed. The version now comes from the parent so the
-              pair cannot drift apart again.
-            -->
             <classifier>linux-x86_64-fedora</classifier>
+        </dependency>
+        <dependency>
+            <groupId>io.netty</groupId>
+            <artifactId>netty-tcnative</artifactId>
+            <classifier>linux-aarch_64-fedora</classifier>
         </dependency>
     </dependencies>
 

@@ -221,11 +221,50 @@ git push origin master
 
 本节的一切都是**本仓库未核实的**，不得被呈现为「已经可用」。每一项都需要来自 BCB onboarding/支持的材料，加上一次 homologação 运行。把它们列为关卡，正是为了让「CI 是绿的」永远不会被误读成「可以对接 BCB 了」。
 
-### 7.1 mTLS 私钥必须可导出——机制现已实测；补救方案存在并已排序
+### 7.1 mTLS 私钥——"必须可导出（EXTRACTABLE）"这一前提现已在 SDK 5 上被否证
 
-**更新于 2026-09-20。** 本项此前把这个缺口称为「架构性问题，不是这里要打的补丁」，并把补救方案说得很含糊。现在机制已被实测、补救方案已排序，所剩下的是一个**决策**而非一个未知项。
+**更新于 2026-09-24。本关卡已关闭，而它此前所用的标题是错误的。** 该标题写的是
+"mTLS private key must be EXTRACTABLE"。这是错的。在真实硬件上实测
+（`hsm2m.medium`、FIPS、Client SDK 5.18.0、JDK 17，运行本仓库自带的、
+由 reactor 构建出的 jar 中的 `PixTlsEngineConfigurer`）：一个**不可导出**的 HSM 私钥
+完成了一次真实的 mTLS 握手，服务器也接受了客户端证书。
 
-#### 机制——实测而非断言
+#### 实测了什么——把失败的路径展示出来而非隐藏
+
+针对一台要求客户端证书的服务器尝试了三条路径。只有第三条可行，而第二条
+是个陷阱：
+
+| 路径 | 结果 |
+|---|---|
+| 用 HSM 密钥执行 JKS `setKeyEntry` | `java.security.KeyStoreException: Cannot get key bytes, not PKCS#8 encoded` |
+| `KeyManagerFactory.init(cloudHsmKeyStore)` | `init()` **成功**，握手**完成**，但 `clientCertsSent=0`——没有提供任何凭据 |
+| **自定义 `X509KeyManager`，持有 HSM 密钥对象及证书链** | **`clientCertsSent=1`**，握手为 `TLSv1.2` / `TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384`，且服务器记录了 `depth=0 CN=pix-pix-mtls-priv` |
+
+对照：完全不配置客户端密钥时，服务器记录到的客户端主体数为**零**，因此这一
+证据不是测试装置造成的假象。
+
+**中间那一行才是最需要记录的，因为它是静默失败。**
+在 CloudHSM 密钥库上调用 `KeyManagerFactory.init()` 不会抛出任何异常，握手
+照样完成——只是它*不带*客户端证书就完成了。这项测量本身的一个早期版本，
+仅凭"没有抛出异常"就把它记录为通过，直到 `clientCertsSent=0` 才把它暴露出来。
+原因是结构性的：一个 `KeyManager` 必须在同一个别名下同时提供私钥**和**一条
+证书链，而 HSM 密钥库持有的密钥没有附带任何证书链。
+
+#### 为什么补救成本很小
+
+`X509KeyManager` 接口交给 JSSE 的是一个 `PrivateKey` **对象**；它从不索取编码后的
+字节。这正是不可导出密钥在这里能工作、却在 JKS 中失败的全部原因：JKS 必须做
+序列化，而 JSSE 只需发起调用。补救大约是**40 行**代码，在一个 HSM 句柄之上实现
+`getPrivateKey`/`getCertificateChain`——不是架构变更，也不构成把密钥改为可导出的
+理由。
+
+它取代了什么：下文中排序过的各项补救方案，是在"可导出性无法避免"这一前提下
+写成的。**路径 B 中"必须从 `SslProvider.OPENSSL` 切换到 JSSE 路径"这一要求仍然
+成立**——HSM 密钥的 `getEncoded()` 为 null，而基于 OpenSSL 的 provider 需要这些
+字节，因此 JDK provider 是必需的。不再成立的，是"PSP 必须接受一个可导出的
+mTLS 密钥"这一框定。
+
+#### 该机制——以实测而非断言呈现
 
 `PixCloudHSMProxyRouteBuilder` 用 `SslProvider.OPENSSL` 与 `keyManager(privateKey, certificates)`（第 204–205 行）构建 BCB 那条腿，所以 mTLS 密钥必须**不带** `-nex` 生成，即可导出。
 

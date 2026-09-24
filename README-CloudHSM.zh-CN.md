@@ -536,6 +536,97 @@ after:   "certificate-reference": "0x02",  "cluster-coverage": "full"
 4. **5.18.0 中的 `configure-cli` 接受不带子命令的选项。**记载中的 `configure-cli update -a <ip>` 形式来自更旧的 SDK 5，会被拒绝并报 *"unrecognized subcommand 'update'"*。此外 `-a <HSM ENI IP>...` 是**可变参数（variadic）**——两个地址放在同一个 `-a` 里，重复该标志会失败。
 5. **在 Amazon Linux 2023 上 `rpm -E %rhel` 返回字面量 `%rhel`。**通过尝试候选值来发现 EL 版本，而不是信任那个宏。
 6. **默认的密钥属性对一个 PSP 签名密钥是错误的。**在没有显式属性的情况下生成时，私钥返回的是 `extractable: true`、`never-extractable: false`、`sign: false`——可导出且无法签名。要显式传入 `--private-attributes sign=true extractable=false`。同样的缺口也存在于 JCE 路径上，那里 SDK 5 把 `extractable` 默认为 true。
+## 迁移离开 Client SDK 3：测量了什么，以及它带来的日历
+
+本节之所以存在，是因为"把 SDK 3 移植到 SDK 5"读起来像是一件事，实际上却是三件事，还附带一项周期性义务。除非另有标注，下面的一切都是在本仓库自身的代码上**实测**得出的。
+
+### 在 SDK 5 上的端到端运行
+
+在 `hsm2m.medium` 上、处于 FIPS 模式，使用 `cloudhsm-cli` 与 `cloudhsm-jce` **5.18.0**、运行于 **JDK 17**，驱动由 reactor 构建出的 jar 中本仓库自己的类——`Iso20022XmlSigner` 与 `PixTlsEngineConfigurer`，而非重新实现的版本：
+
+| 检查项 | 结果 |
+|---|---|
+| 签名密钥是一个 HSM 句柄 | `CloudHsmRsaPrivateCrtKey`，`getEncoded()` 为 **null**——密钥材料从未离开设备 |
+| 仓库自己的 ISO 20022 签名器用它进行签名 | 一条 679 字节的消息变成了包含 `SignatureValue` 的 **2580** 字节 |
+| 该签名可通过验证 | `verify(signed)` = **true** |
+| 用同一类密钥进行 mTLS | **可用**，通过自定义的 `X509KeyManager`——见 `CLOUDHSM_BCB_V2_HANDOFF.md` 第 7.1 节 |
+
+对照实验：把该运行指向一个不存在的密钥标签，会产生 `FAIL signing key not found`，而不是悄无声息地通过。
+
+**因此签名路径在迁移到 SDK 5 时无需任何代码改动。** 绑定到 SDK 3 的四行代码全都在 `PixCloudHSMProxyRouteBuilder` 中：两个 `com.cavium.cfm2` 导入、`Security.addProvider(new CaviumProvider())` 以及 `LoginManager.getInstance().login("PARTITION_1", …)`。它们在 SDK 5 中的等价物是 `Security.addProvider(new CloudHsmProvider())`，外加**从 `HSM_USER` / `HSM_PASSWORD` 隐式登录**——keystore 密码参数是给一个可选的本地 PKCS12 文件用的，而不是给 HSM 用的，把凭据传到那里会使会话处于未认证状态，并伴随一条误导性的 `"The underlying Provider connection was lost"`。
+
+### 那个哪里都没有记录过的 JDK 17 阻塞点
+
+**Lombok 1.18.12 在 JDK 17 上根本无法作为注解处理器运行。** 该项目在 JDK 17 上不是测试失败——而是**编译失败**：
+
+```
+java.lang.IllegalAccessError: class lombok.javac.apt.LombokProcessor (in unnamed module)
+cannot access class com.sun.tools.javac.processing.JavacProcessingEnvironment (in module
+jdk.compiler) because module jdk.compiler does not export com.sun.tools.javac.processing
+```
+
+通过对照实验测量，因此原因是被隔离确定的，而非假设出来的：
+
+| JDK | Lombok | `mvn -pl core package` |
+|---|---|---|
+| 11 | 1.18.12（如提交时所示） | **成功**——基线可用 |
+| 17 | 1.18.12 | **失败**，如上所示 |
+| 17 | 1.18.34 | **成功** |
+| 17 | 1.18.34 | **整个 reactor 成功**，包括 `pix-cloudhsm-proxy-1.0.0-runner.jar` |
+
+最后一行是一个值得明说的意外：一旦 Lombok 更新到位，**Quarkus 1.7.0.Final 能在 JDK 17 上构建**。迁移到 JDK 17 在编译期并未被框架阻塞。至于 Quarkus 1.7 在 JDK 17 上是否能正确*运行*，则是另一个问题，本次并**未**予测量。
+
+Lombok 自己的更新日志把 JDK 17 支持定在 **1.18.22**，所以这就是下限；1.18.30 增加了 JDK 21，1.18.40 增加了 JDK 25。这与本文档中已经记录的 `--add-exports` 要求不同，后者是 XMLDSig 路径的*运行时*需要——那是另一个问题，只有在构建能通过之后才会变得可触及。
+
+### 一项研究提出、随后被测量排除的风险
+
+从 JDK 17 起，JDK **默认启用 XMLDSig 安全验证**——在 JDK 11 上、没有 SecurityManager 时它是关闭的。安全验证会拒绝 SHA-1 摘要和签名，因此一个 XML 签名服务通常会在这个边界上出问题。
+
+**但它不会让这个服务出问题。** 该签名器使用 `DigestMethod.SHA256` 与 `SignatureMethod.RSA_SHA256`，而且上面 `verify(signed) = true` 那次测量正是**在 JDK 17 上**进行的，所以这个问题是靠实证、而非仅靠读代码得到定论的。
+
+### 在单 HSM 集群上创建密钥
+
+对于只有一个 HSM 的测试集群，在关闭可用性检查之前，创建密钥会失败。错误信息本身给出了补救办法：
+
+```
+Cannot perform the requested key operation as the key must be available on at least 2 HSMs.
+Either increase the number of HSMs in the cluster, or disable the key availability check.
+```
+
+`configure-cli --disable-key-availability-check` 与 `configure-jce --disable-key-availability-check` 必须**两者都**设置：它们是各自拥有独立配置文件的不同组件。这是测试集群的便利做法，也恰恰是生产集群**不得**拥有的设置——见高可用性一节。
+
+### 它带来的版本日历
+
+这张表的要点在于：这些没有一项是一次性决定。
+
+| 组件 | 此处锁定 | 当前 | 义务 |
+|---|---|---|---|
+| CloudHSM Client SDK | 3.4.4-1 | 5.18.0 | **SDK 5.17.1 是最后一个支持 OpenJDK 11 的版本**，而 5.8.0 及更早版本已弃用且不再提供托管 |
+| Java | 11 | LTS 17 / 21 / 25 | JCE provider **仅**支持 OpenJDK 17、21 和 25 |
+| Lombok | 1.18.12 | 1.18.48 | JDK 17 下限 1.18.22，JDK 21 下限 1.18.30，JDK 25 下限 1.18.40 |
+| Jackson | 2.15.4 | 2.22.3（2.21 LTS） | **CVE-2026-59888 影响 2.15.x 范围**，在 2.18 及以后修复 |
+| Quarkus | 1.7.0.Final | — | 1.7 的社区维护**已于 2020 年结束**；此后没有安全修复 |
+| Camel Quarkus | 1.0.0 | 3.39.0（3.33.3 LTS） | `camel-netty-http` 仍然存在，仍默认使用 HTTP/1.1，透明代理仍是一等的、有文档记录的用途 |
+| netty-tcnative | 2.0.84.Final, `linux-x86_64-fedora` | — | 已发布一个 **`linux-aarch_64`** 分类器，所以仅锁定 x86_64 是一种选择而非限制 |
+| JUnit | 4.13.1 | 6.1.3 | JUnit 4 仅通过 Vintage 引擎维护；JUnit 6 需要 Java 17+ |
+
+**那个周期性事项，也是最可能被遗忘的一项。** 从 **SDK 5.17** 起，AWS 支持*"最多 3 个此前的次要版本，以及自发布日期起一年"*，并且*"会在新版本推出时禁用较旧和不再受支持版本的下载链接"*。两个后果：
+
+1. 一个锁定的 SDK 5 版本的支持半衰期是**一年或三个次要版本，以先到者为准**。锁定 5.18.0 是一个日历事项，而非一个决定。
+2. 本仓库通过 **SHA-256** 锁定该 rpm，这会使其成为一种*定时*故障而非漂移故障：当下载链接被禁用时，哈希仍然正确，但文件已经消失。一个已经正常工作数月的构建会停止工作，报的是文件缺失的错误，而不是版本的错误。
+
+> **给 homologação 之后负责该部署的人的运维日历事项：**
+>
+> | 时间 | 检查 |
+> |---|---|
+> | 每季度 | 锁定的 CloudHSM SDK 5 版本是否仍在 3 个次要版本和一年之内？它的下载 URL 是否仍然有效？ |
+> | 每季度 | 是否有 Jackson、Netty 或 tcnative 的公告把安全下限提升到了锁定版本之上？ |
+> | 每年，以及在任何 JDK 迁移之前 | 使用中的 Corretto 版本是否仍有供应商补丁，且是否仍是 CloudHSM JCE provider 所支持的 JDK 之一？ |
+> | 添加 HSM 之前 | 在加入期间冻结用户和 mTLS 策略更改——见加入期中分歧一节 |
+> | 任何强制策略更改之前 | `cluster mtls set-enforcement` 需要默认的 `admin` **以及**一个已存在的 mTLS 连接，而且它会一次性断开所有非 mTLS 客户端 |
+
+**关于此次迁移尚未建立的内容。** Quarkus 1.7 在 JDK 17 上*运行*一事未曾测量——只测到了它能构建。Quarkus 的升级路径本身，其供应商记载为 **1.7 → 2.13+ → 3.x → LTS** 而非一步到位，其中 `quarkus update` 工具只覆盖 2.13+ → 3.x 这一段；此处能否省去某个中间跳转，未作调查。Jakarta EE 命名空间变更（`javax.*` → `jakarta.*`）落在 Quarkus 3.0，会触及源代码，而不只是构建文件。而且 Camel 会解析并**从外发的查询字符串中剥离端点选项**，因此任何名称与 `netty-http` 选项名冲突的 BCB 查询参数都会被悄悄丢弃——对于一个逐字节透明的代理来说这是一个真实的考量，而本仓库尚未针对当前组件进行过测试。
+
 ## 两种不同的机制都被称为 "quorum"，混淆二者是真实的隐患
 
 CloudHSM 用 *quorum* 这个词指代两种互不相关的机制。一种统计 **HSM**，另一种统计**人**。它们出现在同一条命令的输出里，这正是二者被混淆的原因。

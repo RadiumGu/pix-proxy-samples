@@ -35,7 +35,8 @@ TARGETS=("VERIFICATION.en.md"
          "README-CloudHSM.zh-CN.md"
          "CLOUDHSM_BCB_V2_HANDOFF.zh-CN.md"
          "README.zh-CN.md"
-         "CLOUDHSM_ADD_HSM_FAQ.zh-CN.md")
+         "CLOUDHSM_ADD_HSM_FAQ.zh-CN.md"
+         "PIX_CLOUDHSM_ASSESSMENT.zh-CN.md")
 
 cleanup() {
   local i=0

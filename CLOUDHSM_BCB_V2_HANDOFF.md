@@ -301,11 +301,48 @@ Everything in this section is **unverified by this repository** and must not be 
 working. Each one needs material from BCB onboarding/support plus a homologação run. They are
 listed as gates precisely so that "CI is green" is never mistaken for "BCB-ready".
 
-### 7.1 mTLS private key must be EXTRACTABLE — mechanism now measured; remedies exist and are ranked
+### 7.1 mTLS private key — the "must be EXTRACTABLE" premise is now FALSIFIED on SDK 5
 
-**Updated 2026-09-20.** This item previously called the gap "architectural, not a bug to patch
-here" and left the remedy vague. The mechanism is now measured and the remedies are ranked, so what
-remains is a decision rather than an unknown.
+**Updated 2026-09-24. This gate is closed, and the heading it used to carry was wrong.** It read
+"mTLS private key must be EXTRACTABLE". That is false. Measured on real hardware
+(`hsm2m.medium`, FIPS, Client SDK 5.18.0, JDK 17, running this repository's own
+`PixTlsEngineConfigurer` from the jar the reactor built): a **non-extractable** HSM private key
+completed a real mTLS handshake and the server accepted the client certificate.
+
+#### What was measured, with the failing paths shown rather than hidden
+
+Three routes were tried against a server demanding a client certificate. Only the third works, and
+the second is a trap:
+
+| Route | Result |
+|---|---|
+| JKS `setKeyEntry` with the HSM key | `java.security.KeyStoreException: Cannot get key bytes, not PKCS#8 encoded` |
+| `KeyManagerFactory.init(cloudHsmKeyStore)` | `init()` **succeeds**, handshake **completes**, and `clientCertsSent=0` — no credential served |
+| **Custom `X509KeyManager` holding the HSM key object plus the chain** | **`clientCertsSent=1`**, handshake `TLSv1.2` / `TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384`, and the server logged `depth=0 CN=pix-pix-mtls-priv` |
+
+Control: with no client key configured at all, the server logged **zero** client subjects, so the
+evidence is not an artefact of the rig.
+
+**The middle row is the important one to record, because it fails silently.**
+`KeyManagerFactory.init()` over the CloudHSM keystore throws nothing, and a handshake still
+completes — it just completes *without* a client certificate. An earlier version of this very
+measurement recorded that as a pass on the strength of "no exception was thrown", and only
+`clientCertsSent=0` exposed it. The cause is structural: a `KeyManager` must serve a private key
+**and** a certificate chain under one alias, and the HSM keystore holds keys with no chain attached.
+
+#### Why the remedy is small
+
+The `X509KeyManager` interface hands JSSE a `PrivateKey` **object**; it never asks for the encoded
+bytes. That is the whole reason a non-extractable key works here and fails in a JKS: JKS has to
+serialise, JSSE only has to call. The remedy is roughly **40 lines** implementing
+`getPrivateKey`/`getCertificateChain` over an HSM handle — not an architecture change, and not a
+reason to make the key extractable.
+
+What this replaces: the ranked remedies below were written when the premise was that extractability
+was unavoidable. **Path B's requirement to move off `SslProvider.OPENSSL` to the JSSE path still
+holds** — an HSM key's `getEncoded()` is null and the OpenSSL-backed provider needs those bytes, so
+the JDK provider is mandatory. What no longer holds is the framing that a PSP must accept an
+extractable mTLS key.
 
 #### The mechanism, measured rather than asserted
 

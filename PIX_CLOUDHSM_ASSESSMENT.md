@@ -1,5 +1,7 @@
 # Pix CloudHSM proxy — verification assessment
 
+**[中文版 / Chinese version](PIX_CLOUDHSM_ASSESSMENT.zh-CN.md)** — this file stays authoritative; CI's `doc-parity` job fails the build if the two disagree on structure, command output, or any measured value or cost figure.
+
 Audience: a decision-maker choosing how to sign and transport Pix messages with AWS CloudHSM.
 This is not an engineering handoff — `CLOUDHSM_BCB_V2_HANDOFF.md` is that, and
 `README-CloudHSM.md` is the architecture. This document says what was **verified on real
@@ -216,7 +218,7 @@ A third cluster was built specifically to test it: two HSMs across two AZs, quor
 PSP-attributed key generated while healthy (`cluster-coverage: full`, `never-extractable: true`,
 `sign: true`), a five-signature baseline, then one HSM deleted.
 
-```
+```console
 baseline, 2 HSMs   5/5 ok   0.46-0.52 s
 degraded, 1 HSM    5/5 ok   0.38-0.46 s   <- the existing key still signs
 ```

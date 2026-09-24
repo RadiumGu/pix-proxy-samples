@@ -38,6 +38,7 @@ AWS CloudHSM —— **维护中的教学路径** | AWS KMS —— **历史遗留
 | [`README-CloudHSM.zh-CN.md`](README-CloudHSM.zh-CN.md) | 架构文档的中文版。`README-CloudHSM.md` 仍是权威副本——要更正就改它,`doc-parity` 作业负责让两边保持同步 | 你需要架构与实测数据但读中文 |
 | [`README-CloudHSM.md`](README-CloudHSM.md) | **维护中的路径。** 架构详解、BCB / TLS / JDK / CloudHSM 的版本要求、完整 AWS 部署步骤、以及如何运行每一项检查 | 你要部署,或需要知道 BCB 在链路上要求什么、哪些版本能满足 |
 | [`README-KMS.md`](README-KMS.md) | **历史遗留 / 不受支持。** 早期的 AWS KMS 变体,仅供参考 | 仅用于了解历史背景。它不被维护、不在 CI 中,不得作为基线 |
+| [`PIX_CLOUDHSM_ASSESSMENT.zh-CN.md`](PIX_CLOUDHSM_ASSESSMENT.zh-CN.md) | 评估文档的中文版。`PIX_CLOUDHSM_ASSESSMENT.md` 仍是权威副本,`doc-parity` 负责让成本数字与实测数据保持同步 | 你要决定规模与预算但读中文 |
 | [`PIX_CLOUDHSM_ASSESSMENT.md`](PIX_CLOUDHSM_ASSESSMENT.md) | 面向决策者的验证评估:在真实 CloudHSM 硬件上测到了什么、推荐哪条传输路径及为何排除其余、双 HSM 可用性发现、以及上生产前的开放关卡 | 你在判断是否以及如何采用这套方案,而不是在实现它 |
 | [`VERIFICATION.md`](VERIFICATION.md) | 独立验证记录:复现了哪些缺陷、修了哪些、每个修复用什么测试过、哪些仍是限制 | 你想要某个主张背后的证据,而不是主张本身 |
 | [`VERIFICATION.en.md`](VERIFICATION.en.md) | 同一份记录的英文版。`VERIFICATION.md` 仍是权威副本——要更正就改它。CI 的 `doc-parity` 作业会在标题、命令或任何测量值两边分歧时让构建失败 | 你需要这些证据但不读中文 |

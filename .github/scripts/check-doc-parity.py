@@ -93,6 +93,7 @@ PAIRS = [
     ('CLOUDHSM_BCB_V2_HANDOFF.md', 'CLOUDHSM_BCB_V2_HANDOFF.zh-CN.md', False),
     ('README.md', 'README.zh-CN.md', False),
     ('CLOUDHSM_ADD_HSM_FAQ.md', 'CLOUDHSM_ADD_HSM_FAQ.zh-CN.md', False),
+    ('PIX_CLOUDHSM_ASSESSMENT.md', 'PIX_CLOUDHSM_ASSESSMENT.zh-CN.md', False),
 ]
 
 # Numbers on these lines name the other file rather than describing the system.

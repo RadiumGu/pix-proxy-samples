@@ -774,6 +774,136 @@ sources; the HSM log alone cannot answer "who removed an HSM".
    `--private-attributes sign=true extractable=false` explicitly. The same gap exists on the JCE
    path, where SDK 5 defaults `extractable` to true.
 
+## Migrating off Client SDK 3: what was measured, and the calendar it creates
+
+This section exists because "port SDK 3 to SDK 5" reads like one task and is three, with a recurring
+obligation attached. Everything below was **measured**, on this repository's own code, unless marked
+otherwise.
+
+### The end-to-end run on SDK 5
+
+On `hsm2m.medium` in FIPS mode with `cloudhsm-cli` and `cloudhsm-jce` **5.18.0** on **JDK 17**,
+driving this repository's own classes from the jar the reactor built — `Iso20022XmlSigner` and
+`PixTlsEngineConfigurer`, not reimplementations:
+
+| Check | Result |
+|---|---|
+| The signing key is an HSM handle | `CloudHsmRsaPrivateCrtKey`, `getEncoded()` **null** — the material never leaves the device |
+| The repository's own ISO 20022 signer signs with it | a 679-byte message became **2580** bytes containing `SignatureValue` |
+| That signature verifies | `verify(signed)` = **true** |
+| mTLS with the same class of key | **works**, via a custom `X509KeyManager` — see `CLOUDHSM_BCB_V2_HANDOFF.md` section 7.1 |
+
+Control: pointing the run at a key label that does not exist produced `FAIL signing key not found`
+rather than a silent pass.
+
+**So the signing path needs no code change for SDK 5.** The four lines that bind to SDK 3 are all in
+`PixCloudHSMProxyRouteBuilder`: two `com.cavium.cfm2` imports,
+`Security.addProvider(new CaviumProvider())` and `LoginManager.getInstance().login("PARTITION_1", …)`.
+Their SDK 5 equivalents are `Security.addProvider(new CloudHsmProvider())` plus **implicit login from
+`HSM_USER` / `HSM_PASSWORD`** — the keystore password argument is for an optional local PKCS12 file,
+not for the HSM, and passing credentials there leaves the session unauthenticated with a misleading
+`"The underlying Provider connection was lost"`.
+
+### The JDK 17 blocker that was not documented anywhere
+
+**Lombok 1.18.12 cannot run as an annotation processor on JDK 17 at all.** The project does not fail
+a test on JDK 17 — it **fails to compile**:
+
+```
+java.lang.IllegalAccessError: class lombok.javac.apt.LombokProcessor (in unnamed module)
+cannot access class com.sun.tools.javac.processing.JavacProcessingEnvironment (in module
+jdk.compiler) because module jdk.compiler does not export com.sun.tools.javac.processing
+```
+
+Measured with a control, so the cause is isolated rather than assumed:
+
+| JDK | Lombok | `mvn -pl core package` |
+|---|---|---|
+| 11 | 1.18.12 (as committed) | **succeeds** — the baseline works |
+| 17 | 1.18.12 | **fails**, as above |
+| 17 | 1.18.34 | **succeeds** |
+| 17 | 1.18.34 | **whole reactor succeeds**, including `pix-cloudhsm-proxy-1.0.0-runner.jar` |
+
+That last row was a surprise worth stating plainly: **Quarkus 1.7.0.Final BUILDS on JDK 17** once
+Lombok is current. The JDK 17 move is not blocked by the framework at compile time. Whether Quarkus
+1.7 *runs* correctly on JDK 17 is a separate question and was **not** measured here.
+
+Lombok's own changelog puts JDK 17 support at **1.18.22**, so that is the floor; 1.18.30 added JDK 21
+and 1.18.40 added JDK 25. This is distinct from the `--add-exports` requirement already recorded in
+this document, which is a *runtime* need of the XMLDSig path — a different problem that only becomes
+reachable once the build works.
+
+### One risk that research raised and measurement then eliminated
+
+From JDK 17, the JDK enables **XMLDSig secure validation by default** — on JDK 11 without a
+SecurityManager it was off. Secure validation rejects SHA-1 digests and signatures, so an XML-signing
+service typically breaks at this boundary.
+
+**It does not break this one.** The signer uses `DigestMethod.SHA256` and
+`SignatureMethod.RSA_SHA256`, and the `verify(signed) = true` measurement above was taken **on JDK
+17**, so the question is settled empirically rather than by reading the code alone.
+
+### Creating a key on a single-HSM cluster
+
+For a one-HSM test cluster, key creation fails until the availability check is turned off. The error
+states the remedy itself:
+
+```
+Cannot perform the requested key operation as the key must be available on at least 2 HSMs.
+Either increase the number of HSMs in the cluster, or disable the key availability check.
+```
+
+`configure-cli --disable-key-availability-check` and `configure-jce --disable-key-availability-check`
+must **both** be set: they are separate components with separate configuration files. This is a
+test-cluster convenience and is exactly the setting a production cluster should NOT have — see the
+high-availability section.
+
+### The version calendar this creates
+
+The point of this table is that none of these are one-time decisions.
+
+| Component | Pinned here | Current | The obligation |
+|---|---|---|---|
+| CloudHSM Client SDK | 3.4.4-1 | 5.18.0 | **SDK 5.17.1 was the last release supporting OpenJDK 11**, and 5.8.0 and earlier are deprecated and no longer hosted |
+| Java | 11 | LTS 17 / 21 / 25 | the JCE provider supports **only** OpenJDK 17, 21 and 25 |
+| Lombok | 1.18.12 | 1.18.48 | floor 1.18.22 for JDK 17, 1.18.30 for JDK 21, 1.18.40 for JDK 25 |
+| Jackson | 2.15.4 | 2.22.3 (2.21 LTS) | **CVE-2026-59888 affects the 2.15.x range**, fixed in 2.18 and later |
+| Quarkus | 1.7.0.Final | — | community maintenance for 1.7 **ended in 2020**; no security fixes since |
+| Camel Quarkus | 1.0.0 | 3.39.0 (3.33.3 LTS) | `camel-netty-http` still exists, still defaults to HTTP/1.1, and transparent proxying is still a first-class documented use |
+| netty-tcnative | 2.0.84.Final, `linux-x86_64-fedora` | — | a **`linux-aarch_64`** classifier is published, so the x86_64-only pin is a choice rather than a limit |
+| JUnit | 4.13.1 | 6.1.3 | JUnit 4 is maintained only through the Vintage engine; JUnit 6 requires Java 17+ |
+
+**The recurring item, which is the one most likely to be forgotten.** From **SDK 5.17** AWS supports
+*"up to 3 prior minor versions and one year from the release date"* and *"will disable download links
+for older and unsupported versions as new versions become available"*. Two consequences:
+
+1. A pinned SDK 5 version has a support half-life of **one year or three minor releases, whichever
+   comes first**. Pinning 5.18.0 is a calendar entry, not a decision.
+2. This repository pins the rpm by **SHA-256**, which becomes a *timed* failure rather than a drift
+   failure: when the download link is disabled the hash is still correct and the file is gone. A
+   build that has worked for months stops working with an error about a missing file, not about a
+   version.
+
+> **Operational calendar items, for whoever owns the deployment after homologação:**
+>
+> | When | Check |
+> |---|---|
+> | Every quarter | Is the pinned CloudHSM SDK 5 version still within 3 minor releases and one year? Is its download URL still live? |
+> | Every quarter | Has a Jackson, Netty or tcnative advisory moved the security floor above the pin? |
+> | Annually, and before any JDK move | Does the Corretto version in use still have vendor patches, and is it still one of the JDKs the CloudHSM JCE provider supports? |
+> | Before adding an HSM | Freeze user and mTLS policy changes for the duration of the join — see the mid-join divergence section |
+> | Before any enforcement change | `cluster mtls set-enforcement` needs the default `admin` **and** an existing mTLS connection, and it drops every non-mTLS client at once |
+
+**What is NOT established about the migration.** Quarkus 1.7 *running* on JDK 17 was not measured —
+only that it builds. The Quarkus upgrade path itself is documented by its vendors as **1.7 → 2.13+ →
+3.x → LTS** rather than a single step, with the `quarkus update` tooling covering only the 2.13+ → 3.x
+leg; whether an intermediate hop is avoidable here was not investigated. The Jakarta EE namespace
+change (`javax.*` → `jakarta.*`) lands in Quarkus 3.0 and will touch source, not just the build file.
+And Camel resolves and **strips endpoint options out of the outgoing query string**, so any BCB query
+parameter whose name collides with a `netty-http` option name would be silently dropped — a real
+consideration for a byte-for-byte transparent proxy that this repository has not tested against the
+current component.
+
 ## Two different things are called "quorum", and conflating them is a real hazard
 
 CloudHSM uses the word *quorum* for two unrelated mechanisms. One counts **HSMs**, the other

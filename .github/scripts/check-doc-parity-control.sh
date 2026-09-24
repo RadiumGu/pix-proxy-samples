@@ -63,8 +63,14 @@ restore_one() {
 }
 
 # Runs the gate and requires it to fail WITH the expected diagnosis.
+# CHECKS counts every perturbation actually attempted, so the summary line reports a measured number
+# instead of a hardcoded one. The previous summary said "on both pairs" and stayed that way after the
+# control was generalised to every pair - it claimed less coverage than it had, which is the same class
+# of drift this control exists to catch.
+CHECKS=0
 expect_failure() {
   local what="$1" expected="$2" out
+  CHECKS=$((CHECKS + 1))
   out="$(python3 "$GATE" 2>&1)"
   if [ -n "$out" ] && printf '%s' "$out" | grep -q "$expected"; then
     echo "  $what PASS: caught, named as '$expected'"
@@ -211,4 +217,4 @@ if [ "$FAILED" -ne 0 ]; then
   echo "NEGATIVE CONTROL FAILED - the parity gate does not actually guard anything"
   exit 1
 fi
-echo "OK: all four drift modes are caught on both pairs, each for the right reason"
+echo "OK: all four drift modes are caught on every pair ($CHECKS checks), each for the right reason"

@@ -406,41 +406,93 @@ private key ideally never leaves the HSM. Closing 7.1 has nothing to do with `cl
 enabling `cluster mtls` does not advance it. They share a name and nothing else.
 
 **What the policy-sync gap means for `cluster mtls`.** Trust anchors and the enforcement level are
-in the category that does **not** self-heal. A partially failed registration leaves some HSMs
-without the anchor indefinitely, and no amount of waiting fixes it. AWS gives both the detection and
-the repair:
+in the category that does **not** self-heal. Everything below was **MEASURED** on a throwaway
+single-HSM `hsm2m.medium` cluster unless marked otherwise; AWS's own page is cited where measurement
+agreed, and contradicted where it did not.
 
-| Step | Command | What to look for |
+| # | Claim | Verdict |
 |---|---|---|
-| Detect | `cluster mtls list-trust-anchors` | each anchor's `cluster-coverage`; anything other than `full` means it is missing from some HSMs |
-| Repair a missing anchor | `cluster mtls register-trust-anchor --path <cert>` | re-running finishes the incomplete operation — it is idempotent, not additive |
-| Repair a lingering anchor | `cluster mtls deregister-trust-anchor --certificate-reference <ref>` | finishes an incomplete removal |
+| 1 | A trust anchor reports `cluster-coverage: "full"` on a **single-HSM** cluster | **MEASURED — confirmed.** Registered one anchor on a 1-HSM cluster; both the register response and `list-trust-anchors` reported `"cluster-coverage": "full"` |
+| 2 | Re-running `register-trust-anchor` finishes an incomplete registration | **MEASURED — FALSIFIED.** Re-registering the same certificate returns `error_code 1`, `"Invalid Certificate: Trust anchor already exists."` It is neither idempotent nor additive — it is **rejected** |
+| 3 | At most **two** trust anchors | **MEASURED — confirmed.** Second registered as `0x02`; third returned `"Maximum number of certificates registered."`; count stayed at 2 |
+| 4 | Chain limited to **6980 bytes** | **MEASURED — confirmed.** A 7320-byte chain returned `"Oversized Certificate: Certificate is too long"` |
+| 5 | `set-enforcement` needs the CLI **already on an mTLS connection** | **MEASURED — confirmed.** Without a client certificate: `"Failed to set the mtls enforcement. Current connection must be mtls to set this enforcement."` |
+| 6 | `set-enforcement` needs the **default admin** | **MEASURED — confirmed in effect, but the error misdirects.** A second user created with `--role admin` was refused with `"An Admin must be logged in to set policy on an HSM"` while the built-in `admin` succeeded. The message never mentions the username, so an operator will go looking for a permissions problem |
+| 7 | Enforcement **drops non-mTLS connections** | **MEASURED — confirmed, with its own control.** See below |
+| 8 | `user list` exposes per-user `cluster-coverage` | **MEASURED — confirmed.** Also reports `locked`, `mfa`, `quorum` |
 
-**But `cluster-coverage: full` is measured to be weaker than it reads, and that applies here too.**
-This repository measured `cluster-coverage: "full"` on a **single-HSM** cluster: coverage is relative
-to **current membership**, not to any durability or redundancy target. So an anchor reported `full`
-while the cluster is degraded is present on however many HSMs happen to exist — possibly one — and
-adding an HSM later does not re-run the check. The operational rule is the same one the key
-durability section arrives at: **count ACTIVE HSMs first, then read `cluster-coverage`.** Neither
-number means anything without the other.
+**The detection command is real; the documented repair is not what AWS's troubleshooting page
+implies.** `cluster mtls list-trust-anchors` does expose a per-anchor `cluster-coverage`, so divergence
+is observable. But that page says to *"re-run the registration command to complete the operation"*, and
+on a cluster where the anchor is present, re-running is **refused** with `"Trust anchor already
+exists."` These measurements were taken on a healthy cluster, so they cannot say whether the same
+command behaves differently when the anchor is genuinely missing from a subset of HSMs — forcing a
+partially failed registration is not something this exercise could do reliably. **So the repair path
+for a genuinely diverged anchor is an open question, not a known procedure.** The one thing now
+established is that it is not a blind re-run: an operator who tries that on a healthy-looking cluster
+gets an error and may conclude wrongly that the anchor is fine.
 
-**Two hard constraints on `cluster mtls set-enforcement` worth knowing before an operator plans a
-change window**, both from AWS's setup page rather than from measurement here:
+**Enforcement, measured with a control rather than asserted.** Only the enforcement level was varied:
 
-1. You must be logged in as the **default admin whose username is literally `admin`** — not merely
-   some user holding the admin role — and the CLI must **already be running over an mTLS
-   connection**. That second requirement is a deliberate interlock: it stops you locking yourself out
-   by enforcing mTLS from a connection that could not satisfy it.
-2. *"After you enforce mTLS usage in the cluster, all existing non-mTLS connections will be
-   dropped."* Every client not yet configured with a key and certificate chain loses access at that
-   instant, so enforcement is a **fleet-wide cutover**, not an incremental tightening.
+| Enforcement | Client certificate configured? | Result |
+|---|---|---|
+| `cluster` | **no** (entries deleted from the config) | `Error: "HSM is disconnected"` |
+| `none` | **no** | works — all 3 users listed |
+| `cluster` | yes | works |
 
-Also relevant if mTLS is ever adopted for the HSM channel: the feature exists **only on
-`hsm2m.medium`** (which is the only creatable type anyway, so this is not a constraint in practice),
-it is **not supported for CloudHSM key stores used with AWS KMS**, a cluster holds at most **two**
-trust anchors, and a chain may be at most **6980 bytes**. The two-anchor limit is what makes trust
-anchor rotation a sequencing problem: with both slots occupied, a third cannot be registered, so a
-slot must be freed before a new anchor can go in.
+The middle row is the control: the same clientless configuration that fails under `cluster` succeeds
+under `none`, so the refusal is the enforcement and not a network or configuration fault.
+
+**Two traps here that will cost an operator real time.**
+
+*The error message names the wrong thing.* An mTLS-enforced cluster rejecting a client without a
+certificate reports **`"HSM is disconnected"`** — nothing about mTLS, certificates or policy. The
+first instinct will be to check security groups, ENIs and routing. If a client loses access right
+after an enforcement change, suspect the certificate before the network.
+
+*Blanking the config entries is not the same as removing them.* Setting
+`client_cert_hsm_tls_path` to `""` leaves the key present, and the client then fails locally with
+`"Could not read configuration-referenced file client_cert_hsm_tls_path at location : No such file or
+directory"` — a client-side error that never reaches the HSM. The entries must be **deleted**. An
+earlier version of this measurement blanked them and concluded nothing, while appearing to have run
+a test.
+
+**Enforcement is reversible, and the CLI's accepted values are narrower than the page suggests.**
+`--level` accepts exactly **`none`** and **`cluster`** — there is no per-HSM level. `--level none`
+succeeded (`"Mtls enforcement level set to None successfully"`), so a cutover is not a one-way door.
+But the order matters: **once relaxed to `none`, re-enabling still requires an mTLS connection.**
+Measured — with enforcement `none` and no client certificate, `set-enforcement --level cluster` was
+refused for the same reason as before. So re-tightening means restoring a client certificate
+configuration first.
+
+**`set-enforcement` accepts a quorum token, which connects this to the M-of-N work.** Its options
+include `--approval <APPROVAL>`, *"Filepath of signed quorum token file to approve operation"*. The
+quorum services measured earlier in this repository are `user`, `quorum` and `cluster` — and this
+command is a `cluster` policy operation. So placing the **`cluster`** service under M-of-N quorum is
+what makes an mTLS enforcement change require multiple admin approvals, rather than one admin with
+one password. That is the concrete reason the earlier recommendation named those three services.
+
+**`cluster-coverage: "full"` is measured to be weaker than it reads, and now measured for policy
+objects too.** This repository had already measured `"full"` for a KEY on a single-HSM cluster. Claim 1
+above extends that to a trust anchor by **measurement** rather than by analogy: coverage is relative to
+**current membership**, not to any durability or redundancy target. An anchor reported `full` while the
+cluster is degraded sits on however many HSMs exist — possibly one.
+
+**And the obvious way to check membership does not work.** `cluster hsm-info` returns `vendor`, `model`,
+`serial-number`, firmware versions and `fips-state` — it has **no HSM-ID field**. So "count ACTIVE HSMs
+first, then read `cluster-coverage`" cannot be done from the client alone; the count must come from the
+control plane (`describe-clusters`), or from counting `serial-number` entries. Worth knowing before
+writing a runbook step that assumes the client can answer it.
+
+**Also worth knowing before adopting mTLS for the HSM channel**, from AWS documentation rather than
+measured here: the feature exists **only on `hsm2m.medium`** (the only creatable type anyway, so not a
+practical constraint), and it is **not supported for CloudHSM key stores used with AWS KMS**. The
+two-anchor limit measured above is what makes trust anchor rotation a sequencing problem: with both
+slots occupied a third cannot be registered, so a slot must be freed before a new anchor can go in.
+
+**The appliance user is visible, and it is named.** `user list` shows it as `app_user` with role
+`internal(APPLIANCE_USER)` alongside the human admins — so the mechanism behind automatic key
+resynchronisation is not hidden infrastructure, it is an enumerable user on every HSM.
 
 **How the automatic key resynchronisation actually works, and why it is safe to rely on.** It uses
 the credentials of the **appliance user (AU)**, which exists on every HSM AWS provides and performs

@@ -29,10 +29,22 @@
             <artifactId>camel-quarkus-netty-http</artifactId>
         </dependency>
 
+        <!--
+          Both architectures, deliberately. Declaring only one means the runner jar carries one
+          architecture's native library and the application fails at STARTUP on the other with
+          UnsatisfiedLinkError: could not load a native library: netty_transport_native_epoll_<arch>.
+          Measured on an aarch64 host: identical failure on JDK 11 and JDK 17, so it is the pin and
+          not the JDK. Both classifiers are published at the Netty version pinned in the parent.
+        -->
         <dependency>
             <groupId>io.netty</groupId>
             <artifactId>netty-transport-native-epoll</artifactId>
             <classifier>linux-x86_64</classifier>
+        </dependency>
+        <dependency>
+            <groupId>io.netty</groupId>
+            <artifactId>netty-transport-native-epoll</artifactId>
+            <classifier>linux-aarch_64</classifier>
         </dependency>
 
         <dependency>

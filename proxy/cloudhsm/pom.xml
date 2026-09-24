@@ -13,7 +13,7 @@
     </parent>
 
     <modules>
-        <module>cavium</module>
+        <module>jce5</module>
         <module>proxy</module>
     </modules>
 

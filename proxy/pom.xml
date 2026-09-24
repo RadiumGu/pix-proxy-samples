@@ -10,6 +10,28 @@
 
     <properties>
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+        <!--
+          The BYTECODE TARGET is 11. The RUNTIME is JDK 17. Those are different things and
+          conflating them is a mistake this comment exists to prevent - I made it once already.
+        
+          CloudHSM Client SDK 5 requires OpenJDK 17, 21 or 25 to RUN; 5.17.1 was the last release
+          supporting 11. That says nothing about what bytecode we emit, and measured, the SDK 5
+          provider jar is itself major version 52 - Java 8 bytecode - so compiling against it
+          imposes no target at all.
+        
+          What DOES impose a target is Quarkus 1.7. With this set to 17 our classes become major
+          61 and its augmentation step fails outright:
+        
+            Build step ClassTransformingBuildStep#handleClassTransformation threw an exception:
+            IllegalArgumentException: Unsupported class file major version 61
+        
+          Measured. Note it did NOT fail everywhere - cloudhsm/proxy packaged fine, because its
+          classes never reach that transformer, so a 17 target looked healthy in the one module
+          that matters while breaking another. That is exactly the shape of a defect that ships.
+        
+          So: emit 11, build and test on JDK 17, run on JDK 17. Raising this to 17 is gated on
+          the Quarkus upgrade (1.7 -> 2.13 -> 3.x), not on anything CloudHSM requires.
+        -->
         <java.version>11</java.version>
         <maven.compiler.source>${java.version}</maven.compiler.source>
         <maven.compiler.target>${java.version}</maven.compiler.target>
@@ -81,26 +103,36 @@
         <jackson.version>2.21.2</jackson.version>
 
         <!--
-          CloudHSM Client SDK 3 (the legacy Cavium JCE provider), pinned as one unit.
+          CloudHSM Client SDK 5 JCE provider, pinned as one unit. All four values move together.
 
-          These three values are coupled and must move together. cloudhsm/cavium downloads the
-          rpm named by the version below, verifies it against the digest, unpacks it, and installs
-          the jar it contains into the local repository as com.cavium:cloudhsm. The jar inside
-          rpm 3.4.4-1 is cloudhsm-3.4.4.jar, which is why the artifact version is 3.4.4 while the
-          rpm version carries the -1 release suffix.
+          WHY SDK 5 AT ALL: SDK 3 cannot talk to hsm2m.medium, and hsm2m.medium is the only HSM type
+          that can still be created - hsm1.medium reached end of support on 2026-03-31. SDK 3 was not
+          a preference to abandon, it was unreachable hardware.
 
-          cloudhsm/proxy previously depended on the open range [3.0.0,) because the version was
-          not knowable until the mutable "latest" rpm had been unpacked. Pinning the rpm makes it
-          knowable, so the range is closed. If the rpm is ever replaced by a different version the
-          artifact version will no longer match and the build FAILS LOUDLY, which is the point -
-          the old arrangement absorbed such a change silently.
+          The jar is NOT on Maven Central. cloudhsm/jce5 downloads this rpm, verifies the digest,
+          unpacks it and installs the jar as com.amazonaws:cloudhsm-jce:${cloudhsm.sdk5.version} in
+          the local repository. That module's comment explains why the artifact is provided-scope and
+          never bundled; the short version is that the jar is architecture-specific AND code-signed.
 
-          SDK 3 is end-of-life and hsm1.medium can no longer be created, so this path cannot be
-          verified on real hardware - see README-CloudHSM.md. Treat it as frozen legacy.
+          The Dockerfile installs the SAME version into the image. Those two must not drift, so CI
+          compares them - see the "cloudhsm - compile" job.
+
+          RECURRING OBLIGATION, not a one-off: from SDK 5.17 AWS supports up to three prior minor
+          versions and one year from the release date, and disables download links for older ones.
+          Pinning by digest turns that into a TIMED failure - the hash stays correct, the object
+          disappears, and the build reports a missing file rather than an expired version. The
+          operational calendar in README-CloudHSM.md exists for this.
+
+          Supported JDKs for this provider are OpenJDK 17, 21 and 25 only. 5.17.1 was the last release
+          to support OpenJDK 11, which is why java.version above cannot go back to 11.
         -->
-        <cloudhsm.sdk3.rpm.version>3.4.4-1</cloudhsm.sdk3.rpm.version>
-        <cloudhsm.sdk3.rpm.sha256>70e3cdce143c45a76e155ffb5969841e0153e011f59eb9f2c6e6be0707030abf</cloudhsm.sdk3.rpm.sha256>
-        <cloudhsm.sdk3.version>3.4.4</cloudhsm.sdk3.version>
+        <cloudhsm.sdk5.version>5.18.0</cloudhsm.sdk5.version>
+        <cloudhsm.sdk5.rpm.version>5.18.0-1</cloudhsm.sdk5.rpm.version>
+        <!-- Filename suffix: lowercase, as it appears inside the rpm name. -->
+        <cloudhsm.sdk5.rpm.platform>amzn2023</cloudhsm.sdk5.rpm.platform>
+        <!-- S3 path segment: CAPITALISED. Measured - the lowercase path returns HTTP 403. -->
+        <cloudhsm.sdk5.rpm.pathsegment>Amzn2023</cloudhsm.sdk5.rpm.pathsegment>
+        <cloudhsm.sdk5.rpm.sha256>2ee2076bea49b970e1b9f6a0edee11dc9cbd139ef11a2687e4e6f54c9cc3ef66</cloudhsm.sdk5.rpm.sha256>
     </properties>
 
     <modules>

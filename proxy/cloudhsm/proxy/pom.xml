@@ -69,17 +69,30 @@
             <artifactId>url-connection-client</artifactId>
         </dependency>
 
+        <!--
+          The CloudHSM Client SDK 5 JCE provider, COMPILE-TIME ONLY.
+
+          provided scope is load-bearing, not tidiness. Three measured reasons, strongest first:
+
+          1. The jar is ARCHITECTURE-SPECIFIC: it carries native/libcloudhsm_jce.so inside itself, and
+             the x86_64 and aarch64 packages ship different jars under the same name and version
+             (measured with cmp; file(1) reports "x86-64" for one and "ARM aarch64" for the other).
+             Bundling it would pin this artifact to the build host's architecture, silently.
+          2. The jar is CODE-SIGNED (META-INF/AMAZONCL.SF, AMAZONCL.RSA) and this module builds an
+             UBER-JAR, which repackages dependencies and so invalidates the signature. AWS documents
+             the symptom: "JCE cannot authenticate the provider CloudHSM".
+          3. It does not need bundling: the container installs the same rpm, so
+             /opt/cloudhsm/java/cloudhsm-jce-<version>.jar is already present and already correct for
+             the image's architecture. The wrapper script puts it on the classpath.
+
+          The coordinate is a LOCAL convention created by cloudhsm/jce5 - this artifact does not exist
+          on Maven Central and never resolves from a remote repository.
+        -->
         <dependency>
-            <groupId>com.cavium</groupId>
-            <artifactId>cloudhsm</artifactId>
-            <!--
-              Was [3.0.0,) - an open range, so the build compiled against whatever version the
-              mutable "latest" rpm happened to contain, and Maven would pick up a newer one
-              silently. The rpm is now pinned in the parent pom, which makes the version knowable,
-              so the range is closed to an exact value. A mismatch between the pinned rpm and this
-              version fails the build instead of being absorbed.
-            -->
-            <version>${cloudhsm.sdk3.version}</version>
+            <groupId>com.amazonaws</groupId>
+            <artifactId>cloudhsm-jce</artifactId>
+            <version>${cloudhsm.sdk5.version}</version>
+            <scope>provided</scope>
         </dependency>
         <dependency>
             <groupId>org.apache.logging.log4j</groupId>

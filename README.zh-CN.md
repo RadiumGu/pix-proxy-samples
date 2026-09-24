@@ -118,7 +118,7 @@ AWS CloudHSM —— **维护中的教学路径** | AWS KMS —— **历史遗留
 | netty-tcnative | 2.0.84.Final，`linux-x86_64-fedora` **与** `linux-aarch_64-fedora` | **两个架构都有。** 名字的不对称是刻意的:实测 2.0.84.Final 上并**没有**发布 plain `linux-aarch_64`。它是 OpenSSL provider，**无法承载 BCB 的 mTLS 密钥**——OpenSSL 需要密钥字节，而 HSM 密钥没有 |
 | Quarkus | 1.7.0.Final | **自 2020 年起不再受支持**——没有安全修复。实测：它在 JDK 17 上确实能*启动*，`Total 3 routes, of which 3 are started`。文档给出的升级路径是 1.7 → 2.13+ → 3.x → LTS |
 | Camel Quarkus | 1.0.0 | 带来 `camel-netty-http`，它按 BCB 的要求使用 HTTP/1.1。在当前 Camel 中仍然存在 |
-| CloudHSM SDK 3 | 3.4.4-1 rpm，经 SHA-256 校验 | **阻塞性的固定项。** 这是 `PixCloudHSMProxyRouteBuilder` 中那四行 SDK 3 代码所要求的 |
+| CloudHSM SDK 5 | 5.18.0-1 rpm，经 SHA-256 校验 | **已是当前版本，不再是阻塞项。** 那四行 SDK 3 代码已移除，provider 改为 `CloudHsmProvider`。该 jar 不在 Maven Central 上，由 `cloudhsm/jce5` 从 rpm 中解包取得，并且是 **`provided`** 作用域——绝不打包进制品，因为它有代码签名且与架构绑定 |
 | Node (alarms app only) | 22 | 用于 CDK 告警应用，在 Maven 构建之外 |
 
 **为什么它仍然无法按现状部署。** 将这段代码绑定到 SDK 3 的那四行——两处 `com.cavium.cfm2` 导入、`new CaviumProvider()` 以及 `LoginManager.login("PARTITION_1", …)`——需要替换为它们的 SDK 5 等价物，而 SDK 5 需要 JDK 17 或更高版本。哪些**不是**障碍，是实测而非假设得出的：XML 签名路径在 SDK 5 上无需改动即可运行（用 HSM 密钥签署了一条真实的 ISO 20022 报文，并验证了签名）；不可导出的 mTLS 密钥可以工作；整个 reactor 在 JDK 17 上构建并测试全绿。此次迁移是四行 provider 接线加上一次本就该做的框架升级——而不是重写签名逻辑。

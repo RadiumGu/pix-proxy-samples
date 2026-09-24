@@ -146,7 +146,7 @@ the SDK 3 era left behind.
 | netty-tcnative | 2.0.84.Final, `linux-x86_64-fedora` **and** `linux-aarch_64-fedora` | **Both architectures.** The names are asymmetric on purpose: measured at 2.0.84.Final, a plain `linux-aarch_64` is **not published**. This is the OpenSSL provider, which **cannot carry the BCB mTLS key** — OpenSSL needs key bytes an HSM has none of |
 | Quarkus | 1.7.0.Final | **Unsupported since 2020** — no security fixes. Measured: it does *start* on JDK 17, `Total 3 routes, of which 3 are started`. The documented upgrade path is 1.7 → 2.13+ → 3.x → LTS |
 | Camel Quarkus | 1.0.0 | Brings `camel-netty-http`, which speaks HTTP/1.1 as BCB requires. Still present in current Camel |
-| CloudHSM SDK 3 | 3.4.4-1 rpm, SHA-256 verified | **The blocking pin.** What the four SDK-3 lines in `PixCloudHSMProxyRouteBuilder` require |
+| CloudHSM SDK 5 | 5.18.0-1 rpm, SHA-256 verified | **Current, and no longer the blocker.** The four SDK 3 lines are gone; the provider is `CloudHsmProvider`. The jar is not on Maven Central, so `cloudhsm/jce5` unpacks it from the rpm, and it is **`provided`** — never bundled, because it is code-signed and architecture-specific |
 | Node (alarms app only) | 22 | For the CDK alarm app, outside the Maven build |
 
 **Why it still cannot be deployed as written.** The four lines binding this code to SDK 3 — two

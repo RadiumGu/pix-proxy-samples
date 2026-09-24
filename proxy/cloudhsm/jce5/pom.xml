@@ -1,0 +1,151 @@
+<project xmlns="http://maven.apache.org/POM/4.0.0" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/maven-v4_0_0.xsd">
+
+    <modelVersion>4.0.0</modelVersion>
+    <artifactId>pix-cloudhsm-jce5</artifactId>
+    <version>1.0.0</version>
+    <packaging>pom</packaging>
+
+    <name>CloudHSM Client SDK 5 JCE provider (compile-time only)</name>
+
+    <!--
+      Makes the CloudHSM Client SDK 5 JCE provider available to COMPILE against. It is not shipped.
+
+      WHY A MODULE AT ALL: the SDK 5 JCE jar is not published to Maven Central, or to any public Maven
+      repository. AWS distributes it only as an OS package, and AWS's own sample project consumes it
+      the same way this module does - install-file on the jar the package installed. So this module
+      downloads the rpm, unpacks it, and installs the jar into the local repository under the
+      coordinate com.amazonaws:cloudhsm-jce:<version>. That coordinate is a LOCAL CONVENTION; do not
+      expect it to resolve anywhere else.
+
+      WHY THE ARTIFACT IS provided AND NOT BUNDLED - three measured reasons, any one of which is
+      sufficient, listed strongest first:
+
+      1. The jar is ARCHITECTURE-SPECIFIC. It carries its own native library at native/libcloudhsm_jce.so
+         - 29 MB of it - and the x86_64 and aarch64 packages ship DIFFERENT jars under the same filename
+         and version. Measured: cmp reports them as differing, and file(1) reports "x86-64" for one and
+         "ARM aarch64" for the other. Bundling it would pin the runtime artifact to whichever
+         architecture the BUILD host fetched, silently, with no version or filename to reveal it.
+
+      2. The jar is CODE-SIGNED - META-INF/AMAZONCL.SF and AMAZONCL.RSA. This module's consumer builds
+         an uber-jar (quarkus.package.uber-jar=true; measured, 2321 io/netty/ entries repackaged inside
+         the runner jar and no lib/ directory), and repackaging a signed jar invalidates its signature.
+         AWS documents the consequence: javax.crypto refuses the provider with
+         "JCE cannot authenticate the provider CloudHSM" on a JDK that enforces it.
+
+      3. It needs no bundling to work. The container installs the same rpm, so the jar and its native
+         library are already present at /opt/cloudhsm/java/ - correct for the image's architecture, by
+         construction. See proxy/cloudhsm/proxy/src/main/docker/Dockerfile.
+
+      So: compile against a pinned copy here, run against the container's own copy. The version pinned
+      below and the version the Dockerfile installs MUST be kept in step; there is a CI check for that
+      in .github/workflows/build.yml.
+    -->
+
+    <parent>
+        <groupId>com.amazon.aws</groupId>
+        <artifactId>pix-cloudhsm</artifactId>
+        <version>1.0.0</version>
+    </parent>
+
+    <build>
+        <plugins>
+            <plugin>
+                <groupId>com.googlecode.maven-download-plugin</groupId>
+                <artifactId>download-maven-plugin</artifactId>
+                <version>1.5.1</version>
+                <executions>
+                    <execution>
+                        <id>cloudhsm-jce-download</id>
+                        <goals>
+                            <goal>wget</goal>
+                        </goals>
+                        <phase>generate-resources</phase>
+                        <configuration>
+                            <skipCache>true</skipCache>
+                            <!--
+                              Pinned to an exact version, deliberately NOT "cloudhsm-jce-latest...".
+                              A mutable URL means the API this repository compiles against can change
+                              without a line of this repository changing, and nothing records which
+                              version a given build used.
+
+                              x86_64 is pinned even though the jar is architecture-specific, because
+                              this copy is used ONLY to compile: the Java API in the jar is identical
+                              across architectures, and the native library inside it is never loaded
+                              during a build. The runtime copy comes from the container's own package.
+
+                              TIMED FAILURE WARNING. From SDK 5.17 AWS supports three prior minor
+                              versions and one year from release, and DISABLES DOWNLOAD LINKS for
+                              older versions. When that happens this URL 404s while the sha256 below
+                              is still perfectly correct, so the build reports a missing file rather
+                              than an expired version. The operational calendar in README-CloudHSM.md
+                              is the reminder to move the pin before that date, not after.
+                            -->
+                            <!--
+                              CASE MATTERS, and the two spellings are not a typo. Measured:
+                              .../CloudHsmClient/Amzn2023/...amzn2023... returns 200, while
+                              .../CloudHsmClient/amzn2023/...amzn2023... returns 403. The S3
+                              path segment is capitalised; the rpm filename is lowercase. Using
+                              one property for both saved S3's 403 XML document as a 243-byte
+                              "rpm" and the build failed later, in the unpacker, pointing away
+                              from the real cause.
+                            -->
+                            <url>https://s3.amazonaws.com/cloudhsmv2-software/CloudHsmClient/${cloudhsm.sdk5.rpm.pathsegment}/cloudhsm-jce-${cloudhsm.sdk5.rpm.version}.${cloudhsm.sdk5.rpm.platform}.x86_64.rpm</url>
+                            <sha256>${cloudhsm.sdk5.rpm.sha256}</sha256>
+                            <outputDirectory>${project.build.directory}/cloudhsm-jce</outputDirectory>
+                        </configuration>
+                    </execution>
+                </executions>
+            </plugin>
+            <plugin>
+                <groupId>org.codehaus.mojo</groupId>
+                <artifactId>rpm-maven-plugin</artifactId>
+                <version>2.2.0</version>
+                <executions>
+                    <execution>
+                        <id>cloudhsm-jce-unpack</id>
+                        <goals>
+                            <goal>unpack</goal>
+                        </goals>
+                        <phase>generate-resources</phase>
+                        <configuration>
+                            <!-- Must track the pinned filename above; a mismatch unpacks nothing and
+                                 the install step then fails on a missing file. -->
+                            <rpmFile>${project.build.directory}/cloudhsm-jce/cloudhsm-jce-${cloudhsm.sdk5.rpm.version}.${cloudhsm.sdk5.rpm.platform}.x86_64.rpm</rpmFile>
+                            <unpackDirectory>${project.build.directory}/cloudhsm-jce</unpackDirectory>
+                        </configuration>
+                    </execution>
+                </executions>
+            </plugin>
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-install-plugin</artifactId>
+                <version>2.5.2</version>
+                <executions>
+                    <execution>
+                        <id>install-cloudhsm-jce</id>
+                        <goals>
+                            <goal>install-file</goal>
+                        </goals>
+                        <phase>generate-resources</phase>
+                        <configuration>
+                            <!--
+                              The version is NOT derived from the unpacked filename the way the old
+                              SDK 3 module did it. It is stated, and the rpm is pinned, so the two can
+                              be compared. Deriving it meant the coordinate silently followed whatever
+                              the rpm contained, which is the behaviour the pin exists to remove.
+                            -->
+                            <groupId>com.amazonaws</groupId>
+                            <artifactId>cloudhsm-jce</artifactId>
+                            <version>${cloudhsm.sdk5.version}</version>
+                            <packaging>jar</packaging>
+                            <file>${project.build.directory}/cloudhsm-jce/opt/cloudhsm/java/cloudhsm-jce-${cloudhsm.sdk5.version}.jar</file>
+                            <generatePom>true</generatePom>
+                        </configuration>
+                    </execution>
+                </executions>
+            </plugin>
+        </plugins>
+    </build>
+
+</project>

@@ -24,7 +24,7 @@ jobs:
       - uses: actions/setup-java@cf277c60eb25467037889841efdb72551f06f6c3 # v4.9.1 - resolved from the SHA, not from the tag I typed
         with:
           distribution: temurin
-          java-version: '11'
+          java-version: '17'
           cache: maven
 
       - name: Build and test proxy/core
@@ -46,7 +46,7 @@ jobs:
       - uses: actions/setup-java@cf277c60eb25467037889841efdb72551f06f6c3 # v4.9.1 - resolved from the SHA, not from the tag I typed
         with:
           distribution: temurin
-          java-version: '11'
+          java-version: '17'
           cache: maven
 
       # proxy/test is the maintained CloudHSM teaching simulator. KMS is deliberately
@@ -70,7 +70,7 @@ jobs:
       - uses: actions/setup-java@cf277c60eb25467037889841efdb72551f06f6c3 # v4.9.1 - resolved from the SHA, not from the tag I typed
         with:
           distribution: temurin
-          java-version: '11'
+          java-version: '17'
           cache: maven
 
       - name: Run DICT v2 contract + core tests
@@ -87,19 +87,20 @@ jobs:
           if-no-files-found: warn
 
   cloudhsm:
-    name: cloudhsm - compile (production module GATES; SDK 3 rpm fetch is best effort)
+    name: cloudhsm - compile (production module GATES; SDK 5 rpm fetch is best effort)
     runs-on: ubuntu-latest
     # No job-level continue-on-error any more, and that is the point.
     #
-    # It used to be non-blocking wholesale, because this job needs an SDK 3 rpm fetched from
-    # a public S3 bucket at build time - an external dependency we do not control, and one
-    # that WILL rot, since AWS disables download links for unsupported Client SDK versions
-    # and SDK 3 is end-of-life. But making the whole job advisory also meant a genuine
+    # It used to be non-blocking wholesale, because this job needs the SDK 5 JCE rpm fetched
+    # from a public S3 bucket at build time - an external dependency we do not control, and
+    # one that WILL rot on a schedule: from 5.17 AWS supports three prior minor versions and
+    # one year from release, and disables download links for the rest. But making the whole
+    # job advisory also meant a genuine
     # compile break in proxy/cloudhsm/proxy - the production route, the TLS factory, the
     # processors - never failed the build. That module is the point of this repository.
     #
     # So the two concerns are separated instead of traded off. Fetching and installing the
-    # SDK 3 jar stays best effort at STEP level. Compiling our own source GATES, and is
+    # SDK 5 jar stays best effort at STEP level. Compiling our own source GATES, and is
     # skipped rather than failed when the prerequisite could not be fetched - with a warning
     # so a skipped gate is never mistaken for a passed one.
     steps:
@@ -107,7 +108,7 @@ jobs:
       - uses: actions/setup-java@cf277c60eb25467037889841efdb72551f06f6c3 # v4.9.1 - resolved from the SHA, not from the tag I typed
         with:
           distribution: temurin
-          java-version: '11'
+          java-version: '17'
           cache: maven
       - name: Install rpm tooling (required by rpm-maven-plugin)
         run: sudo apt-get update && sudo apt-get install -y rpm
@@ -116,7 +117,7 @@ jobs:
       # An earlier version folded our own build into the best-effort step: it ran
       # `-pl .,core,cloudhsm/cavium`, so the aggregator pom install, the core compile
       # AND the rpm pin verification all sat behind continue-on-error. That meant an
-      # OUR-FAULT error - bumping cloudhsm.sdk3.rpm.version without its matching
+      # OUR-FAULT error - bumping cloudhsm.sdk5.rpm.version without its matching
       # sha256, say - failed the step, skipped the production gate, and left the job
       # green with only a warning. The commit that added it described every failure
       # there as "the rpm could not be fetched", which was not true.
@@ -124,21 +125,72 @@ jobs:
       # Now only the genuinely external work is advisory.
       - name: Install the aggregator pom and core - THIS GATES
         run: mvn -B -f proxy/pom.xml -pl .,core install -DskipTests
-      - name: Fetch and install the SDK 3 JCE jar from S3 (external - best effort)
-        id: sdk3
-        continue-on-error: true
-        run: mvn -B -f proxy/pom.xml -pl cloudhsm/cavium install -DskipTests
-      - name: Compile proxy/cloudhsm/proxy - THIS GATES
-        if: steps.sdk3.outcome == 'success'
-        run: mvn -B -f proxy/pom.xml -pl cloudhsm/proxy package -DskipTests
-      - name: Say plainly that the gate was skipped, not passed
-        if: steps.sdk3.outcome != 'success'
+      # The compiled-against version and the SHIPPED version are two separate pins, in two
+      # files, and nothing used to compare them. Drift is invisible - each file looks right
+      # on its own - and the symptom arrives at runtime as a provider that does not match
+      # the API the code was built against. This GATES, and it needs no network.
+      - name: SDK 5 pin in proxy/pom.xml must match the Dockerfile - THIS GATES
         run: |
-          echo "::warning::The SDK 3 JCE rpm could not be fetched from S3, so the"
+          set -euo pipefail
+          POM_RPM=$(sed -n 's#.*<cloudhsm\.sdk5\.rpm\.version>\(.*\)</cloudhsm\.sdk5\.rpm\.version>.*#\1#p' proxy/pom.xml)
+          DOCKER_RPM=$(sed -n 's#^ARG CLOUDHSM_SDK5_RPM_VERSION=\(.*\)$#\1#p' \
+                       proxy/cloudhsm/proxy/src/main/docker/Dockerfile)
+          echo "pom.xml rpm version:    '${POM_RPM}'"
+          echo "Dockerfile rpm version: '${DOCKER_RPM}'"
+          test -n "${POM_RPM}"    || { echo "::error::could not read the SDK 5 rpm pin from proxy/pom.xml"; exit 1; }
+          test -n "${DOCKER_RPM}" || { echo "::error::could not read CLOUDHSM_SDK5_RPM_VERSION from the Dockerfile"; exit 1; }
+          if [ "${POM_RPM}" != "${DOCKER_RPM}" ]; then
+            echo "::error::SDK 5 pin drift: the build compiles against ${POM_RPM} but the image installs ${DOCKER_RPM}."
+            echo "::error::These must be the same version. Update both, or the running provider will not"
+            echo "::error::be the one the code was compiled against."
+            exit 1
+          fi
+          echo "SDK 5 pins agree: ${POM_RPM}"
+      - name: Fetch and install the SDK 5 JCE jar from S3 (external - best effort)
+        id: sdk5
+        continue-on-error: true
+        run: mvn -B -f proxy/pom.xml -pl cloudhsm/jce5 install -DskipTests
+      - name: Compile proxy/cloudhsm/proxy - THIS GATES
+        if: steps.sdk5.outcome == 'success'
+        run: mvn -B -f proxy/pom.xml -pl cloudhsm/proxy package -DskipTests
+      # The SDK 5 jar must NOT end up inside the uber-jar: it is code-signed (repackaging
+      # invalidates the signature) and architecture-specific (bundling pins the artifact to
+      # the build host's architecture, silently). provided scope is what keeps it out, and
+      # scope is easy to change without noticing - so this asserts the OUTCOME rather than
+      # trusting the declaration.
+      - name: The runner jar must not contain the CloudHSM provider - THIS GATES
+        if: steps.sdk5.outcome == 'success'
+        run: |
+          set -euo pipefail
+          JAR=proxy/cloudhsm/proxy/target/pix-cloudhsm-proxy-1.0.0-runner.jar
+          test -f "$JAR" || { echo "::error::$JAR was not built"; exit 1; }
+          FOUND=$(unzip -l "$JAR" | grep -cE 'com/amazonaws/cloudhsm/|libcloudhsm_jce\.so|META-INF/AMAZONCL' || true)
+          echo "CloudHSM provider entries inside the runner jar: ${FOUND}"
+          if [ "${FOUND}" != "0" ]; then
+            unzip -l "$JAR" | grep -E 'com/amazonaws/cloudhsm/|libcloudhsm_jce\.so|META-INF/AMAZONCL' | head -20
+            echo "::error::The CloudHSM JCE provider was bundled into the uber-jar. Its code signature is"
+            echo "::error::now invalid, and the artifact is pinned to one CPU architecture. The dependency"
+            echo "::error::must stay <scope>provided</scope>; the container supplies the jar at runtime."
+            exit 1
+          fi
+          echo "Confirmed: the provider is not bundled."
+      # A gate that is green on a correct tree proves nothing. This mutates the pins four
+      # ways and requires each to be CAUGHT, and caught for the right reason - including the
+      # dangerous case where the property is renamed, sed returns empty, and a naive
+      # comparison of "" against "" would pass while checking nothing.
+      - name: Negative control - the SDK 5 gates must catch drift - THIS GATES
+        if: steps.sdk5.outcome == 'success'
+        run: bash .github/scripts/check-sdk5-pins-control.sh
+      - name: Say plainly that the gate was skipped, not passed
+        if: steps.sdk5.outcome != 'success'
+        run: |
+          echo "::warning::The SDK 5 JCE rpm could not be fetched from S3, so the"
           echo "::warning::proxy/cloudhsm/proxy compile gate was SKIPPED - it did not pass."
-          echo "::warning::SDK 3 is end-of-life and its download links are withdrawn over time;"
-          echo "::warning::see the pin in proxy/pom.xml. Note this step no longer covers our own"
-          echo "::warning::build - the aggregator and core are gated separately above."
+          echo "::warning::AWS supports three prior minor versions and one year from release, and"
+          echo "::warning::disables download links for older ones - so expect this pin to expire"
+          echo "::warning::rather than break. See the pin in proxy/pom.xml and the calendar in"
+          echo "::warning::README-CloudHSM.md. Note this step does not cover our own build - the"
+          echo "::warning::aggregator and core are gated separately above."
 
   shell:
     name: wrapper_script.sh - shellcheck

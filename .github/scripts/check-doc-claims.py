@@ -48,7 +48,7 @@ COMPONENT_PROPERTY = {
     'Netty': 'netty.version',
     'netty-tcnative': 'netty-tcnative.version',
     'Jackson': 'jackson.version',
-    'CloudHSM SDK 3': 'cloudhsm.sdk3.rpm.version',
+    'CloudHSM SDK 5': 'cloudhsm.sdk5.rpm.version',
 }
 
 failures = []

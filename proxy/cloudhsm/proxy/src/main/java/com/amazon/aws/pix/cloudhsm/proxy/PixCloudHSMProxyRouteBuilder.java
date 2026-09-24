@@ -12,9 +12,16 @@ import com.amazon.aws.pix.cloudhsm.proxy.processor.VerifyResponseProcessor;
 import com.amazon.aws.pix.core.util.KeyStoreUtil;
 import com.amazon.aws.pix.core.xml.Iso20022XmlSigner;
 import com.amazon.aws.pix.core.xml.XmlSigner;
-import com.cavium.cfm2.CFM2Exception;
-import com.cavium.cfm2.LoginManager;
+import com.amazon.aws.pix.core.tls.HsmX509KeyManager;
+import com.amazonaws.cloudhsm.jce.provider.CloudHsmProvider;
+import com.amazonaws.cloudhsm.jce.jni.exception.ProviderInitializationException;
 import io.netty.handler.ssl.SslContext;
+import java.security.AuthProvider;
+import javax.security.auth.callback.Callback;
+import javax.security.auth.callback.CallbackHandler;
+import javax.security.auth.callback.PasswordCallback;
+import javax.security.auth.callback.UnsupportedCallbackException;
+import javax.security.auth.login.LoginException;
 import io.netty.handler.ssl.SslContextBuilder;
 import io.netty.handler.ssl.SslProvider;
 import lombok.AllArgsConstructor;
@@ -465,7 +472,58 @@ public class PixCloudHSMProxyRouteBuilder extends EndpointRouteBuilder {
         } while (nextToken != null);
     }
 
-    private void loadCloudHsmKeyStore() throws IOException, CFM2Exception, KeyStoreException, CertificateException, NoSuchAlgorithmException {
+    /**
+     * Installs the CloudHSM Client SDK 5 provider, logs in, and opens the HSM key store.
+     *
+     * <h2>What changed from SDK 3, and why each line is the shape it is</h2>
+     *
+     * <p>SDK 3 is not merely old here, it is unreachable: it cannot talk to {@code hsm2m.medium}, and
+     * that is the only HSM type that can still be created. The SDK 3 form of this method was
+     *
+     * <pre>{@code
+     * Security.addProvider(new com.cavium.provider.CaviumProvider());
+     * LoginManager.getInstance().login("PARTITION_1", hsmUser, hsmPassword);
+     * }</pre>
+     *
+     * <p>and every element of it has moved. Verified against the real {@code cloudhsm-jce-5.18.0.jar}
+     * with {@code javap} rather than from documentation:
+     *
+     * <ul>
+     *   <li>{@code CloudHsmProvider extends java.security.AuthProvider implements java.io.Closeable},
+     *       so login is the STANDARD JCA call and not a vendor singleton.</li>
+     *   <li>The constructor is {@code CloudHsmProvider() throws IOException,
+     *       ProviderInitializationException, LoginException} - it can fail three ways, and the
+     *       {@code LoginException} is there because construction itself may attempt an implicit login
+     *       from {@code HSM_USER} / {@code HSM_PASSWORD}.</li>
+     *   <li>{@code login(Subject, CallbackHandler) throws LoginException} is the only explicit login.
+     *       There is no partition argument: an SDK 5 provider represents the CLUSTER, so SDK 3's
+     *       {@code "PARTITION_1"} has no successor and passing anything like it is impossible rather
+     *       than merely wrong.</li>
+     *   <li>{@code PROVIDER_NAME} and {@code CLOUDHSM_KEYSTORE_TYPE} are both the string
+     *       {@code "CloudHSM"} - measured with {@code javap -constants}. They are used by name below
+     *       instead of a literal so a future rename fails to compile rather than fails at runtime.</li>
+     * </ul>
+     *
+     * <p><b>The credential does NOT go to the key store.</b> {@code load(null, null)} is correct and the
+     * second argument is not the HSM password. AWS is explicit that the key store password protects an
+     * optional LOCAL PKCS12 file that correlates certificates with HSM keys:
+     * <i>"If desired, you can specify a password to encrypt the local PKCS12 file which holds key store
+     * data."</i> Passing the crypto-user password there leaves the session UNAUTHENTICATED and the
+     * first operation fails with a misleading {@code "The underlying Provider connection was lost"}.
+     * The HSM credential belongs to {@link AuthProvider#login}, which is where it goes.
+     *
+     * <p>Explicit login is used rather than the environment variables, even though AWS supports both,
+     * because the credential is held in Secrets Manager and fetched at startup. Putting it in the
+     * process environment instead would make it readable from {@code /proc/<pid>/environ} and from any
+     * crash dump for the life of the process, to buy nothing.
+     *
+     * <p>The provider is registered only if absent. {@code Security.addProvider} is a no-op when a
+     * provider of that name is already installed, so a second unguarded construction would create a
+     * live connection nothing ever closes - and {@code CloudHsmProvider} is {@code Closeable} precisely
+     * because it holds one.
+     */
+    private void loadCloudHsmKeyStore() throws IOException, ProviderInitializationException,
+            LoginException, KeyStoreException, CertificateException, NoSuchAlgorithmException {
 
         SecretsManagerClient secretsManagerClient = SecretsManagerClient.builder()
                 .region(Region.of(awsDefaultRegion))
@@ -477,10 +535,56 @@ public class PixCloudHSMProxyRouteBuilder extends EndpointRouteBuilder {
         String hsmUser = secret.getString(Secret.CloudHSMSecret.user);
         String hsmPassword = secret.getString(Secret.CloudHSMSecret.password);
 
-        Security.addProvider(new com.cavium.provider.CaviumProvider());
-        LoginManager.getInstance().login("PARTITION_1", hsmUser, hsmPassword);
-        cloudHsmKeyStore = KeyStore.getInstance("CloudHSM");
+        AuthProvider provider = (AuthProvider) Security.getProvider(CloudHsmProvider.PROVIDER_NAME);
+        if (provider == null) {
+            provider = new CloudHsmProvider();
+            Security.addProvider(provider);
+        }
+        // SDK 5 delivers the credential through a CallbackHandler as "user:password". That shape is
+        // the provider's, not a convention of ours - see HsmLoginCallbackHandler.
+        provider.login(null, new HsmLoginCallbackHandler(hsmUser, hsmPassword));
+
+        cloudHsmKeyStore = KeyStore.getInstance(CloudHsmProvider.CLOUDHSM_KEYSTORE_TYPE);
+        // Both null on purpose: no local PKCS12 file, and the HSM credential went to login() above.
         cloudHsmKeyStore.load(null, null);
+        log.info("CloudHSM: SDK 5 provider '{}' installed and logged in as {}",
+                CloudHsmProvider.PROVIDER_NAME, hsmUser);
+    }
+
+    /**
+     * Hands the crypto-user credential to the SDK 5 provider in the single string form it expects.
+     *
+     * <p>{@code AuthProvider.login} is a generic JCA entry point, so the provider cannot take a user
+     * and a password as arguments; it asks through a {@link PasswordCallback} and SDK 5 reads the
+     * answer as {@code "user:password"}. That colon-joined shape is the provider's requirement, which
+     * is why it is built here in one place instead of at each call site.
+     *
+     * <p>The joined string is cleared after use. It is a best-effort measure, not a guarantee - the
+     * callback API hands the provider a {@code char[]} we no longer control - but leaving the
+     * credential reachable in a long-lived handler when clearing is one line is not defensible.
+     */
+    private static final class HsmLoginCallbackHandler implements CallbackHandler {
+        private final char[] credential;
+
+        HsmLoginCallbackHandler(final String user, final String password) {
+            this.credential = (user + ":" + password).toCharArray();
+        }
+
+        @Override
+        public void handle(final Callback[] callbacks) throws UnsupportedCallbackException {
+            for (final Callback callback : callbacks) {
+                if (callback instanceof PasswordCallback) {
+                    ((PasswordCallback) callback).setPassword(credential);
+                } else {
+                    // Refuse rather than ignore. A callback type we do not answer means the provider
+                    // wanted something we did not supply, and a silent skip would surface later as an
+                    // unexplained authentication failure.
+                    throw new UnsupportedCallbackException(callback,
+                            "CloudHSM login asked for an unexpected callback type");
+                }
+            }
+            java.util.Arrays.fill(credential, '\0');
+        }
     }
 
     /**
@@ -521,9 +625,28 @@ public class PixCloudHSMProxyRouteBuilder extends EndpointRouteBuilder {
         Collection<X509Certificate> certificates = KeyStoreUtil.getCertificates(getParameter(Param.MtlsCertificate));
         Collection<X509Certificate> trustCertificates = KeyStoreUtil.getCertificates(getParameter(Param.BcbMtlsCertificate));
 
+        // SslProvider.JDK, and this is a correctness requirement rather than a preference.
+        //
+        // This was SslProvider.OPENSSL. OpenSSL cannot use a private key that has no encoded form:
+        // Netty's OpenSslKeyMaterialProvider calls toBIO(key) and then SSL.parsePrivateKey() for any
+        // key that is not already an OpenSslPrivateKey, so it needs the key BYTES. A CloudHSM private
+        // key returns null from getEncoded() by design - measured on hardware:
+        // CloudHsmRsaPrivateCrtKey.getEncoded() is null while the key still signs. So the OPENSSL path
+        // could never have presented this client certificate, whatever else was configured.
+        //
+        // JSSE asks a KeyManager for a PrivateKey OBJECT and never for its bytes, which is why the JDK
+        // provider works here. keyManager(PrivateKey, chain) is NOT usable either - it has the same
+        // encoding requirement - hence HsmX509KeyManager, which serves the handle and the chain under
+        // one alias. Measured with that shape on real hardware: clientCertsSent=1, TLSv1.2,
+        // TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384, and the server logged the client subject.
+        //
+        // netty-tcnative stays on the classpath for the SERVER-side listeners, where the key is a
+        // local file and OpenSSL is a legitimate choice. It is only the HSM-backed client leg that
+        // cannot use it.
         SslContextBuilder builder = SslContextBuilder.forClient()
-                .sslProvider(SslProvider.OPENSSL)
-                .keyManager(mtlsClientKey, certificates)
+                .sslProvider(SslProvider.JDK)
+                .keyManager(new HsmX509KeyManager(mtlsClientKey,
+                        certificates.toArray(new X509Certificate[0])))
                 // Must match the endpoint's enabledProtocols. The custom initializer applies
                 // enabledProtocols ONLY when sslContextParameters is null, and here it is not, so
                 // whatever is pinned on THIS builder is what the handshake offers. Leaving

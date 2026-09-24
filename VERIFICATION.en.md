@@ -93,7 +93,7 @@ Measured (2026-09-19):
 
 > *"You can clone, change, execute it, but **it should not be used as a basis for building the final integration** of the Financial Institution with PIX (SPI and DICT)."*
 
-This fork fixes **5 specific defects**; it does not turn the sample into a production system. The major gaps that remain are in [section 5](#5-what-this-fork-did-not-fix-required-reading) — including that CloudHSM Client SDK 3 is a previous generation, HSM session invalidation has no reconnect, the mTLS private key must be extractable, there is no XSD validation, the audit log contains personal data with no LGPD handling, and so on.
+This fork fixes **5 specific defects**; it does not turn the sample into a production system. The major gaps that remain are in [section 5](#5-what-this-fork-did-not-fix-required-reading) — including that CloudHSM Client SDK 3 is a previous generation, HSM session invalidation has no reconnect, there is no XSD validation, the audit log contains personal data with no LGPD handling, and so on. (This list also used to carry "the mTLS private key must be extractable"; **that item was falsified on SDK 5 hardware on 2026-09-24** — a non-extractable key works, see `CLOUDHSM_BCB_V2_HANDOFF.md` section 7.1.)
 
 ### ⚠️ The CloudHSM path can no longer be deployed (found in the 2026-09-19 re-review, not previously mentioned in this document)
 

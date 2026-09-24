@@ -1273,6 +1273,15 @@ $ openssl x509 -engine cloudhsm -req -days <DAYS> -in <LABEL>.csr -signkey <LABE
 
 #### Generate keys and certificate to mTLS
 
+> **Do not follow this step as written on SDK 5.** It generates an **extractable** mTLS key, on the
+> premise that an extractable key is unavoidable. **That premise is falsified** — measured on
+> `hsm2m.medium` with `cloudhsm-jce` 5.18.0, a **non-extractable** key completed a real mTLS handshake
+> and the server accepted the client certificate. See
+> [`CLOUDHSM_BCB_V2_HANDOFF.md`](CLOUDHSM_BCB_V2_HANDOFF.md) section 7.1 for the measurement and the
+> roughly 40-line `X509KeyManager` that makes it work. The step below is retained because it is what
+> the SDK 3 code in this repository actually requires, and SDK 3 cannot reach a creatable HSM type at
+> all — so treat it as a record of the old path, not an instruction for a new deployment.
+
 - Generating an extractable key for mTLS (Cavium has JCE, but not JSSE):
 
 Launch the key management util:

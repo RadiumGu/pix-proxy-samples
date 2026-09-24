@@ -92,7 +92,7 @@ AWS CloudHSM —— **维护中的教学路径** | AWS KMS —— **历史遗留
 
 | 组件 | 钉住的版本 | 为什么钉在这里 |
 |---|---|---|
-| Java | **11**(CI 用 `temurin`) | CloudHSM Client SDK 3 支持的版本 |
+| Java | **11**(CI 用 `temurin`) | CloudHSM Client SDK 3 支持的版本——也是 **SDK 5 已经不再支持**的版本:5.17.1 是最后支持 OpenJDK 11 的发布,所以这个钉住值活不过这次迁移 |
 | Quarkus | 1.7.0.Final | `camel-quarkus` 1.0.0 对应的代次 |
 | Camel Quarkus | 1.0.0 | 提供 `camel-netty-http`,它讲 HTTP/1.1,符合 BCB 要求 |
 | Netty | **4.1.138.Final** | 更早的版本带有请求走私公告(CWE-444);4.1.118 仍有 CVE-2025-58056 |

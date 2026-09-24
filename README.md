@@ -113,7 +113,7 @@ the build actually uses.
 
 | Component | Pinned | Why it is pinned there |
 |---|---|---|
-| Java | **11** (`temurin` in CI) | What CloudHSM Client SDK 3 supports |
+| Java | **11** (`temurin` in CI) | What CloudHSM Client SDK 3 supports — and what **SDK 5 has stopped supporting**: 5.17.1 was the last release to support OpenJDK 11, so this pin cannot survive the migration |
 | Quarkus | 1.7.0.Final | The generation `camel-quarkus` 1.0.0 targets |
 | Camel Quarkus | 1.0.0 | Brings `camel-netty-http`, which speaks HTTP/1.1 as BCB requires |
 | Netty | **4.1.138.Final** | Earlier pins carried request-smuggling advisories (CWE-444); 4.1.118 still had CVE-2025-58056 |

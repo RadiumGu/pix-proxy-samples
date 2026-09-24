@@ -955,6 +955,13 @@ $ openssl x509 -engine cloudhsm -req -days <DAYS> -in <LABEL>.csr -signkey <LABE
 
 #### Generate keys and certificate to mTLS
 
+> **在 SDK 5 上不要照这一步执行。** 它生成的是一把**可导出**的 mTLS 密钥，前提是「可导出无法避免」。
+> **那个前提已被否证**——在 `hsm2m.medium` 上用 `cloudhsm-jce` 5.18.0 实测：一把**不可导出**的密钥
+> 完成了真实 mTLS 握手，服务端接受了客户端证书。测量过程与那个约 40 行的 `X509KeyManager` 见
+> [`CLOUDHSM_BCB_V2_HANDOFF.md`](CLOUDHSM_BCB_V2_HANDOFF.md) 第 7.1 节。下面这一步之所以保留，
+> 是因为它确实是本仓库中 SDK 3 代码所要求的做法，而 SDK 3 根本连不上任何可创建的 HSM 机型——
+> 所以请把它当作旧路径的记录，而不是新部署的操作指示。
+
 - 为 mTLS 生成一个可导出的密钥（Cavium 有 JCE，但没有 JSSE）：
 
 启动 key management util：

@@ -99,7 +99,7 @@ mvn -B -f proxy/pom.xml -pl core,kms,test package -DskipTests   # 此时通过
 
 > *"You can clone, change, execute it, but **it should not be used as a basis for building the final integration** of the Financial Institution with PIX (SPI and DICT)."*
 
-这个 fork 修的是**5 个具体缺陷**，不是把示例变成了生产系统。仍然存在的重大差距见 [第 5 节](#5-本-fork-没有修的部分必读)——包括 CloudHSM Client SDK 3 已是上一代、HSM 会话失效无重连、mTLS 私钥必须可导出、无 XSD 校验、审计日志含个人数据未做 LGPD 处理等。
+这个 fork 修的是**5 个具体缺陷**，不是把示例变成了生产系统。仍然存在的重大差距见 [第 5 节](#5-本-fork-没有修的部分必读)——包括 CloudHSM Client SDK 3 已是上一代、HSM 会话失效无重连、无 XSD 校验、审计日志含个人数据未做 LGPD 处理等。（原先这份清单里还有「mTLS 私钥必须可导出」一项，**该项已于 2026-09-24 在 SDK 5 硬件上被否证**——不可导出的密钥可以用，见 `CLOUDHSM_BCB_V2_HANDOFF.md` 第 7.1 节。）
 
 ### ⚠️ CloudHSM 路径已不可部署（2026-09-19 复核发现，本文档此前未提）
 

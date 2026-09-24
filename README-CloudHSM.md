@@ -243,9 +243,30 @@ cannot be probed from outside it. Passing these is **not** evidence of BCB homol
 
 ## Cluster high availability: how to size it, and the setting that decides everything
 
-All of the following was **measured on real CloudHSM hardware** — two clusters, HSMs deleted
-while signing, then restored — not reasoned from the documentation. Timings are from
-`hsm2m.medium` clusters in FIPS mode driven by `cloudhsm-cli` 5.18.0.
+All of the following was **measured on real CloudHSM hardware** — several throwaway clusters, HSMs
+deleted while signing, then restored — not reasoned from the documentation.
+
+**Which SDK the measurements used, and why that matters more than it looks.** Every measurement below
+was taken on **Client SDK 5** (`cloudhsm-cli` 5.18.0 for the CLI-driven runs, `cloudhsm-jce` 5.18.0 for
+the long-lived JVM run) against `hsm2m.medium` clusters in FIPS mode. That is **not** the SDK this
+repository's code declares: the code targets SDK 3, which **cannot connect to `hsm2m.medium` at all** —
+AWS's compatibility table lists that type as *not supported* for SDK 3, and `hsm1.medium` can no longer
+be created. So these numbers describe **the configuration the code must migrate to**, not the one it
+currently declares. They do not need re-measuring on SDK 3; measuring them on SDK 3 is impossible.
+
+The CLI and the JCE provider are separate components with separate configuration files, which is why
+they are named separately above rather than lumped together as "SDK 5". Configuring only one leaves the
+other holding the literal placeholder `%%HSM_IP_ADDRESS%%` and it fails with *"Config key hostname has
+invalid value"* — measured here. The long-lived JVM result in particular is a **JCE** measurement, and
+the JCE provider is what production code would actually use.
+
+**A pinned SDK 5 version has a support half-life.** From **SDK 5.17** AWS supports *"up to 3 prior
+minor versions and one year from the release date"*, and *"will disable download links for older and
+unsupported versions as new versions become available"*. Two consequences for a system that must pass
+homologação and then run for years: pinning 5.18.0 is not a one-time decision but a recurring
+obligation, and this repository's approach of pinning an rpm by SHA-256 becomes a timed failure — when
+the download link is disabled the hash is still correct and the file is gone. Versions **5.8.0 and
+earlier are already deprecated**: no backward-compatible updates and not hosted for download.
 
 ### The one thing to get right
 

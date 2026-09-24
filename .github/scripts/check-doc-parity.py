@@ -17,14 +17,23 @@ WHAT IS CHECKED, and why each check is the shape it is.
    copy and not the other, or an H4 silently promoted to an H3, is the commonest way two documents
    drift apart. Only levels are compared, because the text is deliberately translated.
 
-2. Code blocks byte-identical, EXCLUDING whole-line and trailing comments. Commands, log lines and
-   error strings are EVIDENCE: a translated error message is no longer the message the system emitted,
-   so those must survive transcription unaltered rather than merely "corresponding". A comment inside
-   a fence is prose that happens to live in a code block - the first run of this gate proved the
-   point, when all six code-block mismatches turned out to be translated comments sitting above
-   byte-identical commands. The trailing-comment rule requires TWO spaces before the # so that a '#'
-   inside a command (a grep pattern, a URL fragment) is not mistaken for a comment, which would
-   silently discard part of the evidence being compared.
+2. Code blocks byte-identical, EXCLUDING whole-line and trailing comments - but only for fences that
+   carry EVIDENCE. Commands, log lines and error strings are evidence: a translated error message is
+   no longer the message the system emitted, so those must survive transcription unaltered rather
+   than merely "corresponding". A comment inside a fence is prose that happens to live in a code
+   block - the first run of this gate proved the point, when all six code-block mismatches turned out
+   to be translated comments sitting above byte-identical commands. The trailing-comment rule requires
+   TWO spaces before the # so that a '#' inside a command (a grep pattern, a URL fragment) is not
+   mistaken for a comment, which would silently discard part of the evidence being compared.
+
+   A fence with NO LANGUAGE TAG, or tagged `text`, is treated as a DIAGRAM rather than evidence, and
+   this distinction was forced by the front-page pair. README.md fences an ASCII architecture diagram
+   whose labels are prose and must be translated, so demanding byte-identity there would make the gate
+   fail for the wrong reason. Diagram fences are still checked, just differently: every line where
+   NEITHER side contains CJK must be byte-identical. That keeps the box-drawing characters, arrows and
+   identifiers under guard - a mangled diagram is caught - while exempting exactly the label lines that
+   are supposed to change. A tagged fence gets no such leniency, so a command cannot escape the strict
+   check by sitting in a `bash` block.
 
 3. Every MEASURED VALUE - the multiset of distinctive numeric tokens must match. This is the check
    that actually catches a stale copy: correcting "87.2 s" in one file and not the other changes the
@@ -81,6 +90,9 @@ from pathlib import Path
 PAIRS = [
     ('VERIFICATION.md', 'VERIFICATION.en.md', True),
     ('README-CloudHSM.md', 'README-CloudHSM.zh-CN.md', False),
+    ('CLOUDHSM_BCB_V2_HANDOFF.md', 'CLOUDHSM_BCB_V2_HANDOFF.zh-CN.md', False),
+    ('README.md', 'README.zh-CN.md', False),
+    ('CLOUDHSM_ADD_HSM_FAQ.md', 'CLOUDHSM_ADD_HSM_FAQ.zh-CN.md', False),
 ]
 
 # Numbers on these lines name the other file rather than describing the system.
@@ -94,18 +106,61 @@ LINK = re.compile(r'\]\(([^)]+)\)')
 
 
 def split_blocks(text, path):
-    prose, blocks, cur, in_code = [], [], [], False
+    """Returns (prose_lines, [(tag, body), ...]).
+
+    The fence's language tag is kept because it decides how strictly the block is compared: a tagged
+    fence is evidence, an untagged or `text` fence is a diagram.
+    """
+    prose, blocks, cur, tag, in_code = [], [], [], '', False
     for line in text.split('\n'):
         if FENCE.match(line):
             if in_code:
-                blocks.append('\n'.join(cur))
-                cur = []
+                blocks.append((tag, '\n'.join(cur)))
+                cur, tag = [], ''
+            else:
+                tag = line[3:].strip().lower()
             in_code = not in_code
             continue
         (cur if in_code else prose).append(line)
     if in_code:
         raise SystemExit(f'FAIL: unbalanced code fence in {path}')
     return prose, blocks
+
+
+DIAGRAM_TAGS = {'', 'text', 'txt'}
+
+
+def compare_block(tag, a_body, b_body):
+    """Returns a description of the first substantive difference, or None.
+
+    A TAGGED fence must be byte-identical outside comments - it is evidence.
+
+    A DIAGRAM fence is compared on its numeric tokens only, which is a deliberately narrow check
+    arrived at by measurement rather than by taste. The first version compared line counts and failed
+    on the front-page architecture diagram at 16 lines versus 15: English wraps one step onto a second
+    line where the more compact Chinese does not, so the count legitimately differs while both
+    diagrams list steps 1 to 8 in full. Comparing the drawing characters was tried too and fails for
+    the same reason - re-wrapping moves them.
+
+    What survives translation in such a diagram is its NUMBERING, and a dropped or duplicated step is
+    the realistic drift. Single digits are INCLUDED here, unlike the prose check, because the step
+    numbers being guarded are single digits - the reason they are excluded from prose (section
+    references whose count moves with sentence structure) does not apply inside a diagram.
+    """
+    if tag not in DIAGRAM_TAGS:
+        sa, sb = strip_comments(a_body), strip_comments(b_body)
+        if sa == sb:
+            return None
+        return next((f'{x!r} vs {y!r}' for x, y in zip(sa, sb) if x != y),
+                    f'{len(sa)} vs {len(sb)} lines')
+
+    na = Counter(re.findall(r'\d+(?:[.\-/]\d+)*', a_body))
+    nb = Counter(re.findall(r'\d+(?:[.\-/]\d+)*', b_body))
+    if na != nb:
+        return (f'diagram numbering differs - a step may have been dropped. '
+                f'only in first: {dict(sorted((na - nb).items()))}, '
+                f'only in second: {dict(sorted((nb - na).items()))}')
+    return None
 
 
 def strip_comments(block):
@@ -172,16 +227,18 @@ def check_pair(a_path, b_path, bilingual_preamble):
             i = next(i for i, (x, y) in enumerate(zip(ah, bh)) if x != y)
             failures.append(f'heading {i + 1} level differs: {a_path} h{ah[i]} vs {b_path} h{bh[i]}')
 
-    # --- 2. code blocks byte-identical outside comments ---
+    # --- 2. code blocks: strict for evidence, structural for diagrams ---
     if len(a_code) != len(b_code):
         failures.append(f'code block count differs: {len(a_code)} vs {len(b_code)}')
     else:
-        for i, (x, y) in enumerate(zip(a_code, b_code)):
-            sx, sy = strip_comments(x), strip_comments(y)
-            if sx != sy:
-                d = next((f'{p!r} vs {q!r}' for p, q in zip(sx, sy) if p != q),
-                         f'{len(sx)} vs {len(sy)} lines')
-                failures.append(f'code block {i + 1} differs outside comments - evidence must '
+        for i, ((ta, xa), (tb, xb)) in enumerate(zip(a_code, b_code)):
+            if ta != tb:
+                failures.append(f'code block {i + 1} language tag differs: {ta!r} vs {tb!r}')
+                continue
+            d = compare_block(ta, xa, xb)
+            if d:
+                kind = 'diagram' if ta in DIAGRAM_TAGS else 'differs outside comments'
+                failures.append(f'code block {i + 1} ({ta or "untagged"}) {kind} - evidence must '
                                 f'survive transcription unaltered: {d}')
 
     # --- 3. measured values ---

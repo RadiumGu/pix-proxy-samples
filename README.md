@@ -17,7 +17,7 @@
 
 This project contains source code and supporting files to exemplify digital signature and secure message transmission to the Brazilian Instant Payment System (PIX). The maintained CloudHSM architecture represents a **proxy** for communication with Brazilian Central Bank (BACEN). The idea of the proxy is to use **AWS CloudHSM** as a direct and mandatory path for every transaction, with the following objectives:
 
-```bash
+```text
 - Establish the TLS tunnel with mutual authentication (mTLS).
 - Signature of XML messages.
 - Sending the request log to the datastream.
@@ -271,10 +271,21 @@ already bitten: a `.gitignore` pattern once excluded a jest config, CI fell back
 could not parse TypeScript, and the job reported `Tests: 0 total` while passing locally. The alarms
 job now asserts the assertion *count* for exactly that reason.
 
-CI runs **9 jobs**: the two that execute tests (`core`, `dict-v2-contract`), two compile-only builds
+CI runs **11 jobs**: the two that execute tests (`core`, `dict-v2-contract`), two compile-only builds
 (`simulator`, `cloudhsm`), a shellcheck of the container entrypoint, the transport-contract and KMS
-scope gate, the audit-schema check, the doc-parity gate that stops a document and its
-translation from disagreeing, and the gating CDK alarms job.
+scope gate, the audit-schema check, three documentation gates, and the gating CDK alarms job.
+
+The three documentation gates exist because a wrong document is acted on:
+
+| Job | What it fails the build for |
+|---|---|
+| `doc-parity` | a document and its translation disagreeing on structure, a command, or a measured value |
+| `doc-claims` | a documented fact — a pinned version, the CI job count, the route order, an alarm token — disagreeing with the source it describes |
+| `doc-links` | a cross-reference or anchor that no longer resolves |
+
+Each was written after the corresponding mistake was actually made here, not in anticipation of it:
+a measured qualifier that went missing from four documents at once, a front page that claimed 8 CI
+jobs after a ninth was added, and a link left pointing at a heading that had been renamed.
 
 **Every contract assertion here has a negative control** — the guarded thing is removed and the
 check is confirmed to fail *for the right reason*. That habit exists because three gates in this

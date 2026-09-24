@@ -204,6 +204,40 @@ jobs:
           fi
           echo "OK: tree clean after the control"
 
+  doc-claims:
+    name: doc claims - every documented fact vs the source of truth
+    runs-on: ubuntu-latest
+    # These documents state concrete facts about the build: pinned versions, the CI job count, the
+    # processor order in the production route, the alarm tokens the code emits. Each rots silently
+    # when the code moves, and a rotted fact in a handoff document is worse than no fact because a
+    # reader acts on it. This session produced the example - both front pages claimed 8 CI jobs after
+    # a ninth was added, and enumerated only eight.
+    #
+    # The version list is PARSED from the front-page table rather than hardcoded in the script, so
+    # adding a row brings it under guard automatically. Hardcoding it would make the script a second
+    # place the truth has to be maintained, which is the failure mode this job exists to prevent.
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0 - resolved from the SHA, not from the tag I typed
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: '3.12'
+      - run: pip install pyyaml
+      - name: Every documented claim must match the source
+        run: python3 .github/scripts/check-doc-claims.py
+
+  doc-links:
+    name: doc links - every cross-reference resolves
+    runs-on: ubuntu-latest
+    # Renaming a heading is enough to break a link, and nothing about renaming a heading suggests you
+    # have just done so. Checks every markdown file in the root, not one hand-picked pair: the
+    # throwaway version of this check only looked at one document pointing at another, so a broken
+    # link anywhere else was invisible. External URLs are deliberately NOT fetched - a gate that
+    # depends on the network fails for reasons unrelated to this repository.
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0 - resolved from the SHA, not from the tag I typed
+      - name: Every internal link and anchor must resolve
+        run: python3 .github/scripts/check-doc-links.py
+
   audit-schema:
     name: audit schema - AuditLog keys vs documented Glue columns
     runs-on: ubuntu-latest

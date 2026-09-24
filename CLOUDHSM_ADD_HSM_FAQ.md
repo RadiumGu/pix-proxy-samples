@@ -1,5 +1,8 @@
 # Adding an HSM to a CloudHSM cluster: what happens to changes made during the join
 
+**[中文版 / Chinese version](CLOUDHSM_ADD_HSM_FAQ.zh-CN.md)** — this file stays authoritative; CI's
+`doc-parity` job fails the build if the two disagree on structure, command output or measured values.
+
 **Audience:** a PSP's platform or security team planning a CloudHSM capacity change.
 **Status:** every answer below was **measured on real CloudHSM hardware** (`hsm2m.medium`, FIPS mode,
 Client SDK 5.18.0) on a throwaway cluster that was destroyed afterwards. Where something was not
@@ -34,7 +37,7 @@ AWS does not expose *when* the backup is taken, so it was measured from the outs
 created thirty seconds apart across the whole join window, then their coverage was read once the new
 HSM was `ACTIVE`.
 
-```
+```text
 create-hsm issued at epoch 1790239945
   u01  created t+4s    -> cluster-coverage "full"
   u02  created t+34s   -> cluster-coverage "full"
@@ -78,7 +81,7 @@ Measured, with time as the control: 879 seconds (14.6 minutes) after the new HSM
 diverged users were still diverged, while two that had been repaired by hand in the same interval were
 fine. Time is not the variable; the repair is.
 
-```
+```text
 checked 879s after the new HSM became ACTIVE
   u03  full           <- had been repaired by hand
   u05  inconsistent
@@ -98,7 +101,7 @@ which HSM it lands on. That is one of the harder faults to diagnose from the app
 `user list` reports a `cluster-coverage` field per user. `"full"` means every HSM currently in the
 cluster has it; **`"inconsistent"` means some do and some do not**, and that string is the signal.
 
-```
+```json
 { "username": "u05", "role": "crypto-user", "locked": "false",
   "mfa": [], "quorum": [], "cluster-coverage": "inconsistent" }
 ```
@@ -146,7 +149,7 @@ found in this whole area.
 A genuinely diverged anchor was manufactured by registering it during a join window, then repaired by
 re-running the registration exactly as AWS's troubleshooting page advises:
 
-```
+```console
 before:  "certificate-reference": "0x02",  "cluster-coverage": "inconsistent"
 
 $ cloudhsm-cli cluster mtls register-trust-anchor --path ca2.crt
@@ -175,7 +178,7 @@ not be leaned on:
 
 If you prefer an unambiguous path, deregister and re-register instead — measured to work cleanly:
 
-```
+```console
 $ cloudhsm-cli cluster mtls deregister-trust-anchor --certificate-reference 0x02
 { "error_code": 0, "data": { "message": "Trust anchor with reference 0x02 deregistered successfully" } }
 

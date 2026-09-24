@@ -1,5 +1,8 @@
 # CloudHSM + BCB DICT v2 continuation handoff
 
+**[中文版本 / Chinese version](CLOUDHSM_BCB_V2_HANDOFF.zh-CN.md)** — this file stays authoritative;
+CI's `doc-parity` job fails the build if the two disagree on structure, commands or measured values.
+
 > **Purpose**: handoff for an agent/engineer with a working Java 11 + Maven environment to continue the **maintained CloudHSM teaching skeleton** in this fork.
 >
 > **Scope is deliberately narrow**: XML digital signatures, mTLS, CloudHSM client/container integration, and transparent HTTP proxying. **KMS is historical/unsupported: do not modify, build, test, or use it as an acceptance criterion.**

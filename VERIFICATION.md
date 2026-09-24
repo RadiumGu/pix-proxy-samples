@@ -511,7 +511,7 @@ notBefore=Jul  5 2020   notAfter=Jul  3 2030
 
 **③ `README-KMS.md:31` 的链接是字面量 `xxx`**
 
-原文「To learn how to generate a CSR …, see [here](xxx)」——`xxx` 就是链接地址本身，从来没指向任何地方（`git show upstream/master` 确认上游同样如此，非本 fork 引入）。已替换为可核实的去处：本示例签名用的就是 `aws-samples/aws-kms-jce`，它的 `kms-jce-util` 模块里有 `CsrGenerator.generate(keyPair, csrInfo, kmsSigningAlgorithm)`（以及配套的 `SelfSignedCrtGenerator`）。顺带补一条权限精度：生成 CSR 需要构造 `KeyPair`，走的是 `KmsRSAKeyFactory.getKeyPair(kmsClient, keyId)` → 需要 **`kms:GetPublicKey`**，属**部署准备期**权限；而运行期的代理只调 `KmsRSAKeyFactory.getPrivateKey(keyId)`，读源码确认它只是构造一个引用、**不联系 KMS**，所以运行期只需 `kms:Sign`。这一点已写进 README，免得有人按「签名」二字给出过宽的权限。
+原文「To learn how to generate a CSR …, see `[here](xxx)`」——`xxx` 就是链接地址本身，从来没指向任何地方（`git show upstream/master` 确认上游同样如此，非本 fork 引入）。已替换为可核实的去处：本示例签名用的就是 `aws-samples/aws-kms-jce`，它的 `kms-jce-util` 模块里有 `CsrGenerator.generate(keyPair, csrInfo, kmsSigningAlgorithm)`（以及配套的 `SelfSignedCrtGenerator`）。顺带补一条权限精度：生成 CSR 需要构造 `KeyPair`，走的是 `KmsRSAKeyFactory.getKeyPair(kmsClient, keyId)` → 需要 **`kms:GetPublicKey`**，属**部署准备期**权限；而运行期的代理只调 `KmsRSAKeyFactory.getPrivateKey(keyId)`，读源码确认它只是构造一个引用、**不联系 KMS**，所以运行期只需 `kms:Sign`。这一点已写进 README，免得有人按「签名」二字给出过宽的权限。
 
 **一处查了但不成立的怀疑**：曾怀疑 KMS 侧 IAM 清单漏了 `kms:GetPublicKey`。读 `aws-kms-jce` 源码后否决——本项目只调 `getPrivateKey`，而 `KmsRSAKeyFactory:46-48` 的实现是 `new KmsRSAPrivateKey(keyId)`，没有任何 KMS 调用。原清单在运行期语义上是准确的。
 

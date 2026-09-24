@@ -28,7 +28,14 @@ FAILED=0
 declare -a BACKUPS=()
 
 # Each guarded translation, perturbed in turn.
-TARGETS=("VERIFICATION.en.md" "README-CloudHSM.zh-CN.md")
+# Each guarded translation, perturbed in turn. ALL of them: the pairs share code but take different
+# options, and an option exercised on only one pair is an option whose behaviour on the others is
+# untested.
+TARGETS=("VERIFICATION.en.md"
+         "README-CloudHSM.zh-CN.md"
+         "CLOUDHSM_BCB_V2_HANDOFF.zh-CN.md"
+         "README.zh-CN.md"
+         "CLOUDHSM_ADD_HSM_FAQ.zh-CN.md")
 
 cleanup() {
   local i=0
@@ -96,42 +103,81 @@ PY
   expect_failure "control 1 (measured value)" "measured values diverge"
   restore_one "$T" "$B"
 
-  # ---- control 2: a command inside a code block altered ----
+  # ---- control 2: a command inside an EVIDENCE code block altered ----
   # Commands are evidence. A reader who copies one from the translation must run the same thing the
   # authoritative copy recorded.
+  #
+  # Two things this control has to get right, both learned by getting them wrong:
+  #
+  # It must pick a TAGGED fence. An untagged or `text` fence is a diagram, which the gate deliberately
+  # compares only on its numbering - so perturbing a line there proves nothing about the strict check
+  # this control exercises. The first version picked the first line in ANY fence and reported FAIL on
+  # every pair once diagram handling was added: the control was testing the wrong thing.
+  #
+  # It must perturb the COMMAND, not append at end of line. Appending lands after any trailing
+  # comment, and the gate strips trailing comments before comparing - so the perturbation was invisible
+  # and the control read as the gate failing. Insert before the comment instead.
   TARGET_FILE="$T" python3 - <<'PY'
 import os, re, sys
 p = os.environ['TARGET_FILE']
 lines = open(p).read().split('\n')
-in_code = False
+TRAILING = re.compile(r'\s{2,}(#|//)\s')
+tag, in_code = '', False
 for i, l in enumerate(lines):
     if l.startswith('```'):
+        if not in_code:
+            tag = l[3:].strip().lower()
         in_code = not in_code
         continue
-    # A substantive command line: not a comment, not blank.
-    if in_code and l.strip() and not l.lstrip().startswith(('#', '//')):
-        lines[i] = l + ' --perturbed-by-the-negative-control'
-        print(f'  perturbed a command on line {i + 1}')
+    if in_code and tag not in ('', 'text', 'txt') and l.strip() \
+            and not l.lstrip().startswith(('#', '//')):
+        m = TRAILING.search(l)
+        if m:
+            # Insert INSIDE the command, before the trailing comment the gate strips.
+            lines[i] = l[:m.start()] + ' --perturbed-by-the-negative-control' + l[m.start():]
+            where = 'before the trailing comment'
+        else:
+            lines[i] = l + ' --perturbed-by-the-negative-control'
+            where = 'at end of line'
+        print(f'  perturbed a command on line {i + 1} of a {tag!r} block, {where}')
         break
 else:
-    sys.exit(f'control 2 found no command line in {p} - update the control')
+    sys.exit(f'control 2 found no evidence-fence command line in {p} - update the control')
 open(p, 'w').write('\n'.join(lines))
 PY
   expect_failure "control 2 (command)" "differs outside comments"
   restore_one "$T" "$B"
 
   # ---- control 3: a whole section dropped from one copy ----
+  # The heading level is CHOSEN from the file rather than hardcoded. An earlier version looked for
+  # `### ` and simply exited on the customer FAQ, which has only H1 and H2 - so the control silently
+  # did not run at all while appearing to be present. A control that can skip itself is worse than no
+  # control, because it reports nothing while guarding nothing.
   TARGET_FILE="$T" python3 - <<'PY'
 import os, re, sys
 p = os.environ['TARGET_FILE']
 lines = open(p).read().split('\n')
-idx = [i for i, l in enumerate(lines) if re.match(r'^### ', l)]
-if len(idx) < 2:
-    sys.exit(f'control 3 needs two H3 headings in {p} - update the control')
+in_code = False
+by_level = {}
+for i, l in enumerate(lines):
+    if l.startswith('```'):
+        in_code = not in_code
+        continue
+    if in_code:
+        continue
+    m = re.match(r'^(#{2,6}) ', l)
+    if m:
+        by_level.setdefault(len(m.group(1)), []).append(i)
+# Deepest level that has at least two headings, so removing one is a clean section drop.
+usable = [lv for lv, idx in sorted(by_level.items(), reverse=True) if len(idx) >= 2]
+if not usable:
+    sys.exit(f'control 3 found no level with two headings in {p} - update the control')
+lv = usable[0]
+idx = by_level[lv]
 n = idx[1] - idx[0]
 del lines[idx[0]:idx[1]]
 open(p, 'w').write('\n'.join(lines))
-print(f'  dropped a section: {n} lines')
+print(f'  dropped an h{lv} section: {n} lines')
 PY
   expect_failure "control 3 (dropped section)" "heading count differs"
   restore_one "$T" "$B"

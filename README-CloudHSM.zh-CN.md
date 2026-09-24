@@ -220,9 +220,27 @@ bash .github/scripts/check-transport-contract.sh               # 必须以非零
 homologação 的证据。
 ## 集群高可用：如何确定规模，以及决定一切的那个设置
 
-以下全部内容均**在真实 CloudHSM 硬件上实测**——两个集群，在签名过程中删除 HSM，
-然后再恢复——而非从文档推理得出。计时数据来自由 `cloudhsm-cli` 5.18.0 驱动、
-运行于 FIPS 模式的 `hsm2m.medium` 集群。
+以下全部内容均**在真实 CloudHSM 硬件上实测**——若干一次性集群，在签名过程中删除 HSM，
+然后再恢复——而非从文档推理得出。
+
+**实测用的是哪个 SDK，以及为什么这件事比看上去重要。** 下面每一项测量都是在 **Client SDK 5** 上做的
+（CLI 驱动的那些用 `cloudhsm-cli` 5.18.0，长驻 JVM 那次用 `cloudhsm-jce` 5.18.0），
+针对运行于 FIPS 模式的 `hsm2m.medium` 集群。这**不是**本仓库代码所声明的那个 SDK：
+代码面向 SDK 3，而 SDK 3 **根本连不上 `hsm2m.medium`**——AWS 的兼容表把该类型对 SDK 3 标为
+*not supported*，而 `hsm1.medium` 已经无法创建。所以这些数字描述的是**代码必须迁移过去的那个配置**，
+不是它当前声明的那个。它们不需要在 SDK 3 上重测；在 SDK 3 上测它们是不可能的。
+
+CLI 与 JCE provider 是两个独立组件、各有独立的配置文件，所以上面把它们分别列出而不是笼统写成
+「SDK 5」。只配置其中一个，另一个会留着字面占位符 `%%HSM_IP_ADDRESS%%` 并报
+*"Config key hostname has invalid value"* —— 这一点本处实测过。尤其是长驻 JVM 那个结果属于
+**JCE** 测量，而 JCE provider 正是生产代码实际会用的那一个。
+
+**钉住的 SDK 5 版本有支持半衰期。** 从 **SDK 5.17** 起，AWS 支持
+*"up to 3 prior minor versions and one year from the release date"*，并且
+*"will disable download links for older and unsupported versions as new versions become available"*。
+对一个要通过 homologação 并随后运行数年的系统，这有两个后果：钉住 5.18.0 不是一次性决定而是一项
+持续义务；而本仓库用 SHA-256 钉住 rpm 的做法会变成一个定时故障——下载链接被停用时，
+哈希仍然正确，文件却没了。**5.8.0 及更早版本已被弃用**：不提供向后兼容更新，也不再托管下载。
 
 ### 唯一必须做对的事
 

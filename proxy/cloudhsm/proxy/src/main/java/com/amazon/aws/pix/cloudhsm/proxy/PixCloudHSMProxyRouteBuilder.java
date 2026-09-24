@@ -19,6 +19,7 @@ import io.netty.handler.ssl.SslContext;
 import java.security.AuthProvider;
 import javax.security.auth.callback.Callback;
 import javax.security.auth.callback.CallbackHandler;
+import javax.security.auth.callback.NameCallback;
 import javax.security.auth.callback.PasswordCallback;
 import javax.security.auth.callback.UnsupportedCallbackException;
 import javax.security.auth.login.LoginException;
@@ -545,13 +546,42 @@ public class PixCloudHSMProxyRouteBuilder extends EndpointRouteBuilder {
         String hsmPassword = secret.getString(Secret.CloudHSMSecret.password);
 
         AuthProvider provider = (AuthProvider) Security.getProvider(CloudHsmProvider.PROVIDER_NAME);
-        if (provider == null) {
+        final boolean alreadyInstalled = provider != null;
+        if (!alreadyInstalled) {
             provider = new CloudHsmProvider();
             Security.addProvider(provider);
         }
-        // SDK 5 delivers the credential through a CallbackHandler as "user:password". That shape is
-        // the provider's, not a convention of ours - see HsmLoginCallbackHandler.
-        provider.login(null, new HsmLoginCallbackHandler(hsmUser, hsmPassword));
+
+        // The two login modes are MUTUALLY EXCLUSIVE, and the provider decides which one it is in at
+        // CONSTRUCTION time. Measured against a real cluster on SDK 5.18.0: with HSM_USER and
+        // HSM_PASSWORD present in the environment, new CloudHsmProvider() logs in IMPLICITLY while being
+        // constructed, and the explicit login below is then refused outright with
+        //
+        //   IllegalStateException: Explict login unavailable using system credentials.
+        //
+        // (AWS's own spelling of "Explict".) So a deployment that happens to set those variables - a
+        // task definition copied from an AWS sample, a debugging session left in place - would take this
+        // proxy down at startup, with an error that names neither variable.
+        //
+        // The credential here comes from Secrets Manager, so explicit login is what we want; the
+        // environment variables are the thing to avoid. Their presence is therefore treated as a
+        // configuration error and reported as one, rather than being discovered as a stack trace.
+        final boolean systemCredentialsPresent =
+                System.getenv("HSM_USER") != null || System.getenv("HSM_PASSWORD") != null
+                        || System.getProperty("HSM_USER") != null
+                        || System.getProperty("HSM_PASSWORD") != null;
+        if (systemCredentialsPresent) {
+            log.warn("CloudHSM: HSM_USER/HSM_PASSWORD are set in the environment or as system "
+                    + "properties. SDK 5 then logs in IMPLICITLY during provider construction and "
+                    + "REFUSES the explicit login this proxy performs. Skipping the explicit login and "
+                    + "relying on the implicit one - but UNSET those variables: the credential this "
+                    + "proxy fetches from Secrets Manager is then the one in use, and a stale variable "
+                    + "would silently authenticate as a different user.");
+        } else if (!alreadyInstalled) {
+            // SDK 5 delivers the credential through a CallbackHandler as "user:password". That shape is
+            // the provider's, not a convention of ours - see HsmLoginCallbackHandler.
+            provider.login(null, new HsmLoginCallbackHandler(hsmUser, hsmPassword));
+        }
 
         cloudHsmKeyStore = KeyStore.getInstance(CloudHsmProvider.CLOUDHSM_KEYSTORE_TYPE);
         // Both null on purpose: no local PKCS12 file, and the HSM credential went to login() above.
@@ -568,6 +598,23 @@ public class PixCloudHSMProxyRouteBuilder extends EndpointRouteBuilder {
      * answer as {@code "user:password"}. That colon-joined shape is the provider's requirement, which
      * is why it is built here in one place instead of at each call site.
      *
+     * <p><b>Unrecognised callbacks are IGNORED, not refused, and that is load-bearing.</b> An earlier
+     * version of this class threw {@link UnsupportedCallbackException} for anything that was not a
+     * {@code PasswordCallback}, on the reasoning that refusing is safer than ignoring. Measured against
+     * a real cluster on SDK 5.18.0, that reasoning was wrong and the class could never have logged in:
+     * the provider offers TWO callbacks and its own type comes FIRST.
+     *
+     * <pre>
+     * callback offered: com.amazonaws.cloudhsm.jce.provider.authentication.AuthenticationStrategyCallback
+     * callback offered: javax.security.auth.callback.PasswordCallback
+     * </pre>
+     *
+     * <p>Refusing the first produced {@code LoginException: Unsupported type of Callback used}, so
+     * every explicit login failed. The {@code AuthenticationStrategyCallback} is an internal provider
+     * type carrying its own default, and leaving it alone is what the provider expects. A callback this
+     * handler does not answer is therefore left for the provider to default, which is the documented
+     * contract for {@code CallbackHandler} and what the login actually needs.
+     *
      * <p>The joined string is cleared after use. It is a best-effort measure, not a guarantee - the
      * callback API hands the provider a {@code char[]} we no longer control - but leaving the
      * credential reachable in a long-lived handler when clearing is one line is not defensible.
@@ -580,19 +627,48 @@ public class PixCloudHSMProxyRouteBuilder extends EndpointRouteBuilder {
         }
 
         @Override
-        public void handle(final Callback[] callbacks) throws UnsupportedCallbackException {
+        public void handle(final Callback[] callbacks) {
+            boolean answered = false;
             for (final Callback callback : callbacks) {
                 if (callback instanceof PasswordCallback) {
                     ((PasswordCallback) callback).setPassword(credential);
-                } else {
-                    // Refuse rather than ignore. A callback type we do not answer means the provider
-                    // wanted something we did not supply, and a silent skip would surface later as an
-                    // unexplained authentication failure.
-                    throw new UnsupportedCallbackException(callback,
-                            "CloudHSM login asked for an unexpected callback type");
+                    answered = true;
+                } else if (callback instanceof NameCallback) {
+                    ((NameCallback) callback).setName(hsmUserOf(credential));
+                    answered = true;
                 }
+                // Everything else is deliberately left untouched - see the class comment. SDK 5 passes
+                // provider-internal callbacks that already carry their defaults, and refusing them
+                // breaks login outright.
+            }
+            if (!answered) {
+                // Not a refusal of an individual callback, but a statement that the provider asked for
+                // nothing this handler can supply - in which case the credential never reached it and a
+                // silent "success" would be worse than a loud failure.
+                log.error("CloudHSM login: the provider offered no callback this handler can answer, "
+                        + "so no credential was supplied. Offered: {}", describe(callbacks));
+                throw new IllegalStateException(
+                        "CloudHSM login supplied no credential: no PasswordCallback was offered");
             }
             java.util.Arrays.fill(credential, '\0');
+        }
+
+        /** The user half of the "user:password" pin, for a NameCallback that asks separately. */
+        private static String hsmUserOf(final char[] pin) {
+            final String s = new String(pin);
+            final int colon = s.indexOf(':');
+            return colon < 0 ? s : s.substring(0, colon);
+        }
+
+        private static String describe(final Callback[] callbacks) {
+            final StringBuilder sb = new StringBuilder();
+            for (final Callback c : callbacks) {
+                if (sb.length() > 0) {
+                    sb.append(", ");
+                }
+                sb.append(c == null ? "null" : c.getClass().getName());
+            }
+            return sb.toString();
         }
     }
 

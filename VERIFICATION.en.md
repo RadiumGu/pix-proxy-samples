@@ -22,7 +22,7 @@
 > rendering**. The **authoritative original is [`VERIFICATION.md`](VERIFICATION.md)**, whose body is
 > Chinese because it was written as a working record, and that is the copy to correct if you find an
 > error here. The two are held together mechanically, not by good intentions: CI runs
-> `.github/scripts/check-verification-parity.py`, which fails the build if the headings, the code
+> `.github/scripts/check-doc-parity.py`, which fails the build if the headings, the code
 > blocks, or any measured number diverge between them — because an audit trail that exists in two
 > copies is an audit trail that can quietly disagree with itself.
 >

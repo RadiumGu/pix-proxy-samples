@@ -36,11 +36,12 @@ Here is the whole set and what each one is *for*, so you do not have to open all
 | Document | What it is | Read it when |
 |---|---|---|
 | **`README.md`** (this file) | Entry point and scope statement: what this fork maintains and what it deliberately does not. | Start here. |
+| [`README-CloudHSM.zh-CN.md`](README-CloudHSM.zh-CN.md) | The architecture document in Chinese. `README-CloudHSM.md` stays authoritative — correct that one; the `doc-parity` job keeps them in step. | You need the architecture and measurements but read Chinese. |
 | [`README-CloudHSM.md`](README-CloudHSM.md) | **The maintained path.** Architecture walkthrough, the BCB / TLS / JDK / CloudHSM version requirements, full AWS deployment steps, and how to run every check. | You are deploying, or you need to know what BCB requires on the wire and which versions satisfy it. |
 | [`README-KMS.md`](README-KMS.md) | **Historical / unsupported.** The older AWS KMS variant, kept for reference only. | Only for historical context. It is not maintained, not in CI, and must not be used as a baseline. |
 | [`PIX_CLOUDHSM_ASSESSMENT.md`](PIX_CLOUDHSM_ASSESSMENT.md) | Verification assessment for a decision-maker: what was measured on real CloudHSM hardware, the recommended transport path and why the alternatives were eliminated, the two-HSM availability finding, and the open gates before production. | You are deciding whether and how to adopt this approach, rather than implementing it. |
 | [`VERIFICATION.md`](VERIFICATION.md) | Independent verification record: which defects were reproduced, which were fixed, what each fix was tested with, and what remains a limitation. | You want the evidence for a claim this repository makes, rather than the claim itself. |
-| [`VERIFICATION.en.md`](VERIFICATION.en.md) | The same record in English. `VERIFICATION.md` stays authoritative — correct that one. CI's `verification-parity` job fails the build if the headings, the commands or any measured value diverge between them. | You need the evidence but do not read Chinese. |
+| [`VERIFICATION.en.md`](VERIFICATION.en.md) | The same record in English. `VERIFICATION.md` stays authoritative — correct that one. CI's `doc-parity` job fails the build if the headings, the commands or any measured value diverge between them. | You need the evidence but do not read Chinese. |
 | [`CLOUDHSM_ADD_HSM_FAQ.md`](CLOUDHSM_ADD_HSM_FAQ.md) | Customer-facing FAQ for adding an HSM to a cluster: what happens to keys, users and mTLS trust anchors created while the new HSM is joining. Measured on hardware, with the command output quoted. | A customer asks what happens to in-flight changes during a capacity change. |
 | [`CLOUDHSM_BCB_V2_HANDOFF.md`](CLOUDHSM_BCB_V2_HANDOFF.md) · [中文](CLOUDHSM_BCB_V2_HANDOFF.zh-CN.md) | Engineering handoff: the external BCB baseline, the evidence table for the transport contract, required next work, and the **homologação gates that are explicitly NOT solved**. | You are picking this work up, or you need the honest list of what is unproven. |
 | [`CONTRIBUTING.md`](CONTRIBUTING.md) | Contribution and security-reporting process. | Reporting an issue or opening a PR. |
@@ -272,8 +273,8 @@ job now asserts the assertion *count* for exactly that reason.
 
 CI runs **9 jobs**: the two that execute tests (`core`, `dict-v2-contract`), two compile-only builds
 (`simulator`, `cloudhsm`), a shellcheck of the container entrypoint, the transport-contract and KMS
-scope gate, the audit-schema check, the verification-parity gate that stops the two audit-trail
-copies from disagreeing, and the gating CDK alarms job.
+scope gate, the audit-schema check, the doc-parity gate that stops a document and its
+translation from disagreeing, and the gating CDK alarms job.
 
 **Every contract assertion here has a negative control** — the guarded thing is removed and the
 check is confirmed to fail *for the right reason*. That habit exists because three gates in this

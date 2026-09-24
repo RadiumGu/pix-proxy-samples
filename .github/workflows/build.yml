@@ -168,8 +168,8 @@ jobs:
       - name: Check transport contract options and scope
         run: bash .github/scripts/check-transport-contract.sh
 
-  verification-parity:
-    name: verification parity - the two audit-trail copies cannot disagree
+  doc-parity:
+    name: doc parity - a document and its translation cannot disagree
     runs-on: ubuntu-latest
     # VERIFICATION.md is the authoritative audit trail and VERIFICATION.en.md is its English
     # rendering. Keeping an audit trail in two languages doubles the places a correction has to
@@ -183,15 +183,17 @@ jobs:
     # "Tests: 0 total" while appearing green because its config was gitignored.
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0 - resolved from the SHA, not from the tag I typed
-      - name: Both copies must exist
+      - name: Every guarded copy must exist
         run: |
           set -euo pipefail
-          test -f VERIFICATION.md
-          test -f VERIFICATION.en.md
+          for f in VERIFICATION.md VERIFICATION.en.md \
+                   README-CloudHSM.md README-CloudHSM.zh-CN.md; do
+            test -f "$f" || { echo "missing: $f"; exit 1; }
+          done
       - name: Parity gate
-        run: python3 .github/scripts/check-verification-parity.py
+        run: python3 .github/scripts/check-doc-parity.py
       - name: Negative control - the gate must fail on each drift mode, for the right reason
-        run: bash .github/scripts/check-verification-parity-control.sh
+        run: bash .github/scripts/check-doc-parity-control.sh
       - name: The control must leave the tree untouched
         run: |
           set -euo pipefail

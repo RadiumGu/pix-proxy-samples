@@ -1,5 +1,7 @@
 # AWS CloudHSM architecture to exemplify digital signature and secure message transmission to the Brazilian Instant Payment System
 
+> **中文:** [`README-CloudHSM.zh-CN.md`](README-CloudHSM.zh-CN.md) — a full Chinese rendering. **This file stays authoritative**: correct this one, and CI's `doc-parity` job fails the build if the headings, any command, or any measured value diverge between them.
+
 <p align="center">
   <img src="/images/proxy-cloudhsm.png">
 </p>

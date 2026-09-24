@@ -35,11 +35,12 @@ AWS CloudHSM —— **维护中的教学路径** | AWS KMS —— **历史遗留
 | 文档 | 它是什么 | 什么时候读 |
 |---|---|---|
 | **`README.md`** / **`README.zh-CN.md`**(本文) | 入口与范围声明:本分支维护什么、刻意不做什么 | 从这里开始 |
+| [`README-CloudHSM.zh-CN.md`](README-CloudHSM.zh-CN.md) | 架构文档的中文版。`README-CloudHSM.md` 仍是权威副本——要更正就改它,`doc-parity` 作业负责让两边保持同步 | 你需要架构与实测数据但读中文 |
 | [`README-CloudHSM.md`](README-CloudHSM.md) | **维护中的路径。** 架构详解、BCB / TLS / JDK / CloudHSM 的版本要求、完整 AWS 部署步骤、以及如何运行每一项检查 | 你要部署,或需要知道 BCB 在链路上要求什么、哪些版本能满足 |
 | [`README-KMS.md`](README-KMS.md) | **历史遗留 / 不受支持。** 早期的 AWS KMS 变体,仅供参考 | 仅用于了解历史背景。它不被维护、不在 CI 中,不得作为基线 |
 | [`PIX_CLOUDHSM_ASSESSMENT.md`](PIX_CLOUDHSM_ASSESSMENT.md) | 面向决策者的验证评估:在真实 CloudHSM 硬件上测到了什么、推荐哪条传输路径及为何排除其余、双 HSM 可用性发现、以及上生产前的开放关卡 | 你在判断是否以及如何采用这套方案,而不是在实现它 |
 | [`VERIFICATION.md`](VERIFICATION.md) | 独立验证记录:复现了哪些缺陷、修了哪些、每个修复用什么测试过、哪些仍是限制 | 你想要某个主张背后的证据,而不是主张本身 |
-| [`VERIFICATION.en.md`](VERIFICATION.en.md) | 同一份记录的英文版。`VERIFICATION.md` 仍是权威副本——要更正就改它。CI 的 `verification-parity` 作业会在标题、命令或任何测量值两边分歧时让构建失败 | 你需要这些证据但不读中文 |
+| [`VERIFICATION.en.md`](VERIFICATION.en.md) | 同一份记录的英文版。`VERIFICATION.md` 仍是权威副本——要更正就改它。CI 的 `doc-parity` 作业会在标题、命令或任何测量值两边分歧时让构建失败 | 你需要这些证据但不读中文 |
 | [`CLOUDHSM_ADD_HSM_FAQ.md`](CLOUDHSM_ADD_HSM_FAQ.md) | 面向客户的新增 HSM 问答:在新 HSM 加入期间创建的密钥、用户、mTLS 信任锚各会怎样。全部真机实测,附命令原始输出 | 客户问扩容期间正在进行的变更会怎样 |
 | [`CLOUDHSM_BCB_V2_HANDOFF.zh-CN.md`](CLOUDHSM_BCB_V2_HANDOFF.zh-CN.md) · [English](CLOUDHSM_BCB_V2_HANDOFF.md) | 工程交接:外部 BCB 基线、传输契约的证据表、需要继续做的工作,以及**明确尚未解决的 homologação 关卡** | 你要接手这项工作,或需要一份诚实的「哪些尚未证明」清单 |
 | [`CONTRIBUTING.md`](CONTRIBUTING.md) | 贡献与安全问题上报流程 | 报告问题或提 PR |
@@ -198,7 +199,7 @@ Maven 反应堆根是 `proxy/pom.xml`,所以按模块构建要写 `mvn -f proxy/
 
 **读测试数量,不看绿勾。** 只有 `proxy/core` 与 `proxy/test` 执行测试——其余模块以 `-DskipTests` 构建,所以加进它们的测试会静默地永不运行。这件事已经发生过:一条 `.gitignore` 规则曾把一个 jest 配置排除在提交之外,CI 回退到一个无法解析 TypeScript 的转换器,作业报告 `Tests: 0 total`,而本地全绿。告警作业现在会断言断言的**数量**,正是为此。
 
-CI 共 **9 个作业**:两个执行测试的(`core`、`dict-v2-contract`)、两个仅编译的(`simulator`、`cloudhsm`)、一个容器入口脚本的 shellcheck、传输契约与 KMS 范围门禁、审计 schema 检查、防止两份审计记录副本互相矛盾的 verification-parity 门禁,以及作为硬门禁的 CDK 告警作业。
+CI 共 **9 个作业**:两个执行测试的(`core`、`dict-v2-contract`)、两个仅编译的(`simulator`、`cloudhsm`)、一个容器入口脚本的 shellcheck、传输契约与 KMS 范围门禁、审计 schema 检查、防止一份文档与其译文互相矛盾的 doc-parity 门禁,以及作为硬门禁的 CDK 告警作业。
 
 **这里每一条契约断言都有反向对照**——把被守护的东西移除,并确认检查**因为正确的原因**失败。这个习惯的由来是:本仓库曾有三条门禁在被守护对象已经消失的情况下依然通过,因为 `grep 'Foo'` 会匹配改名后的 `FooGone`。**断言要针对用法,不要针对名字片段。**
 

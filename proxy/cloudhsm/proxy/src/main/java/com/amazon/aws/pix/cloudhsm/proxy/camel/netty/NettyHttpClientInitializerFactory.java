@@ -153,6 +153,23 @@ public class NettyHttpClientInitializerFactory extends ClientInitializerFactory 
             // dialled. With SNI alone, JSSE validates the chain and then accepts it for ANY host.
             // Exact-leaf pinning limits that today, but the mitigation disappears as soon as the
             // anchor becomes a CA - the direction revocation checking pushes it.
+            // Camel 3.18 ALSO ships a hostnameVerification endpoint option, and this code does NOT
+            // use it. Verified with javap against camel-endpointdsl 3.18.6: the DSL exposes
+            // hostnameVerification(boolean) on the netty-http builder. It did not exist in 3.4, so it
+            // arrived with the Quarkus 1.7 -> 2.13 upgrade, and its default is FALSE - which is why
+            // nothing about this code's behaviour changed.
+            //
+            // Two paths to the same property now exist and only ONE of them is wired. Setting the
+            // endpoint option would not make this call redundant: it takes effect in Camel's own
+            // engine setup, whereas this factory REPLACES that setup - configureClientSSLOnDemand is
+            // the whole reason a custom ClientInitializerFactory exists here. A future reader who
+            // sets hostnameVerification(true) on the endpoint and deletes the line below would lose
+            // the check entirely, with the option looking like it covers it.
+            //
+            // Not switching to the option, deliberately: it toggles a boolean inside Camel, while
+            // this needs the SNI name AND the endpoint-identification algorithm set on the same
+            // SSLEngine, which is what PixTlsEngineConfigurer does. If that ever changes, the
+            // hostname-verification test is what should decide it - it drives a real Netty handshake.
             PixTlsEngineConfigurer.configureClient(engine, uri.getHost());
             if (producer.getConfiguration().getSslContextParameters() == null) {
                 // just set the enabledProtocols if the SslContextParameter doesn't set

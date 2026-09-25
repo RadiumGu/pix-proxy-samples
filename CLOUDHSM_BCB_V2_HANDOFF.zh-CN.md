@@ -243,6 +243,41 @@ git push origin master
 对照：完全不配置客户端密钥时，服务器记录到的客户端主体数为**零**，因此这一
 证据不是测试装置造成的假象。
 
+#### 整个已部署的应用，两条腿，都在真实硬件上
+
+上面那项测量驱动的是本仓库的*类*。这一项运行的是两个**应用**——CloudHSM 代理与 DICT v2 模拟器——针对一个真实的
+`hsm2m.medium` FIPS 集群、Client SDK 5.18.0，且代理的 mTLS 与签名私钥均以 `extractable=false`、
+`never-extractable=true` 创建。
+
+| 腿 | 请求 | 结果 |
+|---|---|---|
+| **DICT**（代理 `8080` → 模拟器 `8181`） | 明文传入 `GET /api/v2/keys/…` | **HTTP 200**，2597 字节，`<CreateClaimResponse>` 内含 `SignatureValue`，以及代理自己的判定头 **`pix-signature-valid: true`** |
+| **SPI**（代理 `9090` → 模拟器 `9191`） | `POST` 本仓库自带的未签名 `pacs.008` 样本 | **HTTP 201 Created**，返回 `PI-ResourceId`——模拟器**验证了代理用 HSM 密钥所生成的签名** |
+| 健康检查 | `7070` 上的 `GET /check` | **HTTP 200**，主体为 `OK` |
+
+这两条腿并不冗余。在 DICT 这条腿上，代理*验证*它收到的签名；只有在 SPI 这条腿上，它才用 HSM 密钥*产生*一个签名
+并被对端接受。模拟器要求客户端证书（`needClientAuth=true`），且其信任库由那张 HSM 背书的证书构建，因此握手能够
+完成本身也排除了「客户端凭据被静默省略」这一情形。
+
+**SPI 的结果在有对照之前没有意义。** 模拟器的检查是 `if (body non-empty && !verify(body))`，所以一个空的
+请求体会跳过验证并照样返回 201。把它的 `SignatureCertificate` 参数指向一张无关的证书、再重放同一请求，得到
+**HTTP 403 `Signature invalid!`**——因此验证是活的，那个 201 是对一个由 HSM 生成的签名的真实接受，而不是一次
+从未运行过的检查。
+
+该对照的第一次尝试什么都没改却「通过」了：它在 EC2 实例上执行 `put-parameter`，而该实例的 IAM 策略只授予了
+`ssm:Get*`。**一个无法施加自身变异的对照，报告出的结果与一道真正有效的门禁完全一样。**
+
+另有两项行为，记为非缺陷，因为二者都是本仓库按设计工作：
+
+- 一旦 `BcbMtlsCertificate` 或 `BcbSignatureCertificate` 持有模拟器的证书，`WellKnownTestCertificates`
+  就会记录一条 **ERROR**：*"TRUSTING A BACEN SIMULATOR CERTIFICATE whose PRIVATE KEY IS PUBLIC"*。正是这道
+  护栏使得测试值无法被无声地留在原处。
+- 第一次 DICT 请求未带 `PI-RequestingParticipant`，返回 **HTTP 400**，并说明*"代理必须转发它，因此它的缺失
+  意味着它被丢弃了"*。模拟器检查这些头，正是为了抓住丢头的代理，所以那个 400 是透明性契约在工作。
+
+**这一项并未确立什么。** 这些证书是自签的，不是 ICP-Brasil 链；对端是模拟器，不是 BCB；吊销检查按出厂状态处于
+关闭。HSM 集成与传输行为是实测的——而一次真实的 BCB 会话仍然是一个 homologação 闸口。
+
 **中间那一行才是最需要记录的，因为它是静默失败。**
 在 CloudHSM 密钥库上调用 `KeyManagerFactory.init()` 不会抛出任何异常，握手
 照样完成——只是它*不带*客户端证书就完成了。这项测量本身的一个早期版本，

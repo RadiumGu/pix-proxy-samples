@@ -323,6 +323,46 @@ the second is a trap:
 Control: with no client key configured at all, the server logged **zero** client subjects, so the
 evidence is not an artefact of the rig.
 
+#### The whole deployed application, both legs, on real hardware
+
+The measurement above drives this repository's *classes*. This one runs both **applications** — the
+CloudHSM proxy and the DICT v2 simulator — against a real `hsm2m.medium` FIPS cluster on Client SDK
+5.18.0, with the proxy's mTLS and signing keys created `extractable=false`, `never-extractable=true`.
+
+| Leg | Request | Result |
+|---|---|---|
+| **DICT** (proxy `8080` → simulator `8181`) | `GET /api/v2/keys/…` plaintext in | **HTTP 200**, 2597 bytes, `<CreateClaimResponse>` with a `SignatureValue`, and the proxy's own verdict header **`pix-signature-valid: true`** |
+| **SPI** (proxy `9090` → simulator `9191`) | `POST` the repository's own unsigned `pacs.008` fixture | **HTTP 201 Created**, `PI-ResourceId` returned — the simulator **verified the signature the proxy produced with the HSM key** |
+| Health | `GET /check` on `7070` | **HTTP 200**, body `OK` |
+
+The two legs are not redundant. On the DICT leg the proxy *verifies* a signature it receives; only on the
+SPI leg does it *produce* one with the HSM key and have a peer accept it. The simulator requires a client
+certificate (`needClientAuth=true`) and builds its truststore from the HSM-backed certificate, so a
+handshake completing at all also rules out a silently absent client credential.
+
+**The SPI result required a control before it meant anything.** The simulator checks
+`if (body non-empty && !verify(body))`, so an empty body would skip verification and still return 201.
+Pointing its `SignatureCertificate` parameter at an unrelated certificate and replaying the same request
+gives **HTTP 403 `Signature invalid!`** — so verification is live, and the 201 is a genuine acceptance of
+an HSM-produced signature rather than a check that never ran.
+
+A first attempt at that control changed nothing and "passed": it issued the `put-parameter` from the EC2
+instance, whose IAM policy grants `ssm:Get*` only. A control that cannot apply its own mutation reports
+the same thing as a gate that works.
+
+Two further behaviours, recorded as non-defects because both are the repository working as intended:
+
+- `WellKnownTestCertificates` logs an **ERROR** the moment `BcbMtlsCertificate` or
+  `BcbSignatureCertificate` holds a simulator certificate: *"TRUSTING A BACEN SIMULATOR CERTIFICATE whose
+  PRIVATE KEY IS PUBLIC"*. That guard is the reason a test value cannot be left in place unnoticed.
+- The first DICT request, sent without `PI-RequestingParticipant`, returned **HTTP 400** with *"the proxy
+  must forward it, so its absence means it was dropped"*. The simulator checks those headers precisely to
+  catch a proxy that drops them, so the 400 was the transparency contract working.
+
+**What this does NOT establish.** The certificates are self-signed, not an ICP-Brasil chain; the peer is
+the simulator, not BCB; revocation checking was off, as it ships. The HSM integration and the transport
+behaviour are measured — a real BCB conversation remains a homologação gate.
+
 **The middle row is the important one to record, because it fails silently.**
 `KeyManagerFactory.init()` over the CloudHSM keystore throws nothing, and a handshake still
 completes — it just completes *without* a client certificate. An earlier version of this very

@@ -1298,6 +1298,8 @@ new cloudwatch.Alarm(this, 'AuditDataFreshnessAlarm', {
 
 > **值格式：** 仅填写主机名加端口——**不要**包含 `https://`、结尾的斜杠或 `/api/v2`。CloudHSM 代理使用 Camel `bridgeEndpoint(true)`，并保留传入请求的路径/查询字符串。因此，调用方应用程序必须把 BCB v2 路径（例如 `/api/v2/entries/{Key}`）发送给代理。
 >
+> **配错时的报错不会指向任何有用的地方。** 如果值里已经带了 scheme，会失败于 `ConnectException: Cannot connect to https:443` / `UnknownHostException: https`——代码自己会加上 `https://`，于是 `https` 被当成主机名解析。已实测。请使用**主机名**而非 IP：代理设置了 `endpointIdentificationAlgorithm=HTTPS`，因此该地址必须与对端出示证书上的某个 SAN 条目相符。
+>
 > **BCB DICT v2 基线（使用前需与 BCB 核实）：**
 > - Homologação（验收环境）：`dict-h.pi.rsfn.net.br:16522`
 > - Production（生产环境）：`dict.pi.rsfn.net.br:16422`

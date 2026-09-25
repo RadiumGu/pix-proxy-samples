@@ -1619,6 +1619,8 @@ To find out the CloudHSM Cluster Id is simple. In the AWS console, type CloudHSM
 
 > **Value format:** hostname plus port only — do **not** include `https://`, a trailing slash, or `/api/v2`. The CloudHSM proxy uses Camel `bridgeEndpoint(true)` and preserves the incoming request path/query string. The calling application must therefore send the BCB v2 path (for example `/api/v2/entries/{Key}`) to the proxy.
 >
+> **If you get this wrong the error names nothing useful.** A value that already carries the scheme fails with `ConnectException: Cannot connect to https:443` / `UnknownHostException: https` — the code prepends `https://` itself, so `https` is parsed as the hostname. Measured. Use a **hostname**, not an IP: the proxy sets `endpointIdentificationAlgorithm=HTTPS`, so the address must match a SAN entry on the certificate the peer presents.
+>
 > **BCB DICT v2 baseline (verify with BCB before use):**
 > - Homologação: `dict-h.pi.rsfn.net.br:16522`
 > - Production: `dict.pi.rsfn.net.br:16422`

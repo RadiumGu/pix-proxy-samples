@@ -11,28 +11,18 @@
     <properties>
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
         <!--
-          The BYTECODE TARGET is 11. The RUNTIME is JDK 17. Those are different things and
-          conflating them is a mistake this comment exists to prevent - I made it once already.
+          17, and the RUNTIME and the TARGET finally agree.
         
-          CloudHSM Client SDK 5 requires OpenJDK 17, 21 or 25 to RUN; 5.17.1 was the last release
-          supporting 11. That says nothing about what bytecode we emit, and measured, the SDK 5
-          provider jar is itself major version 52 - Java 8 bytecode - so compiling against it
-          imposes no target at all.
+          This was 11 for one reason only: Quarkus 1.7's augmentation could not read major-61 class
+          files - "Unsupported class file major version 61" from ClassTransformingBuildStep - so the
+          target had to stay behind the JDK the code ran on. That constraint is gone: Quarkus 3.33's
+          own minimum is JDK 17, and Camel 4 dropped Java 11 entirely.
         
-          What DOES impose a target is Quarkus 1.7. With this set to 17 our classes become major
-          61 and its augmentation step fails outright:
-        
-            Build step ClassTransformingBuildStep#handleClassTransformation threw an exception:
-            IllegalArgumentException: Unsupported class file major version 61
-        
-          Measured. Note it did NOT fail everywhere - cloudhsm/proxy packaged fine, because its
-          classes never reach that transformer, so a 17 target looked healthy in the one module
-          that matters while breaking another. That is exactly the shape of a defect that ships.
-        
-          So: emit 11, build and test on JDK 17, run on JDK 17. Raising this to 17 is gated on
-          the Quarkus upgrade (1.7 -> 2.13 -> 3.x), not on anything CloudHSM requires.
+          Independently required by CloudHSM: the SDK 5 JCE provider supports OpenJDK 17, 21 and 25
+          only. Two separate constraints now point at the same number, where before they pointed at
+          different ones and the difference had to be documented to avoid being "fixed".
         -->
-        <java.version>11</java.version>
+        <java.version>17</java.version>
         <maven.compiler.source>${java.version}</maven.compiler.source>
         <maven.compiler.target>${java.version}</maven.compiler.target>
 
@@ -57,8 +47,26 @@
           Raising java.version to 17 is unblocked by finishing that second leg - Quarkus 1.7 could
           not read major-61 class files at all. See the comment on java.version.
         -->
-        <quarkus.version>2.13.9.Final</quarkus.version>
-        <camel-quarkus.version>2.13.3</camel-quarkus.version>
+        <!--
+          Quarkus 3.33 LTS - the first version in this repository's history that is actually
+          SUPPORTED. Released 2026-03-25, community maintenance until 2027-03-25. 1.7 had been
+          unmaintained since 2020 and 2.13 since 2022-11-07, and 2.13 was never an LTS at all.
+        
+          This is the PLATFORM version, and camel-quarkus is no longer pinned separately: the
+          member BOM io.quarkus.platform:quarkus-camel-bom manages the Camel extensions, so a second
+          property would only be a way for the two to drift. Verified by resolving the BOM rather
+          than from a release note - importing quarkus-camel-bom:3.33.3.3 and asking for
+          camel-quarkus-netty-http with no version yields:
+        
+            camel-quarkus-netty-http:jar:3.33.2
+            org.apache.camel:camel-netty-http:jar:4.18.3
+            org.apache.camel:camel-core-engine:jar:4.18.3
+        
+          Note camel-quarkus 3.33.3 EXISTS and the platform still pins 3.33.2. Do not "upgrade" the
+          extension to .3 by hand: platform 3.33.3.3 with camel-quarkus 3.33.3 is a combination
+          nobody released or tested. The same ceiling mismatch existed in the 2.13 line.
+        -->
+        <quarkus.version>3.33.3.3</quarkus.version>
 
         <aws.bom.version>2.13.0</aws.bom.version>
         <!--
@@ -71,7 +79,6 @@
         <lombok.version>1.18.48</lombok.version>
 
         <junit.version>4.13.1</junit.version>
-        <commons-io.version>2.14.0</commons-io.version>
 
         <!--
           Security overrides. quarkus-bom 1.7.0.Final pulls Netty 4.1.49.Final and
@@ -270,11 +277,19 @@
                 <scope>test</scope>
             </dependency>
 
-            <dependency>
-                <groupId>commons-io</groupId>
-                <artifactId>commons-io</artifactId>
-                <version>${commons-io.version}</version>
-            </dependency>
+            <!--
+              commons-io is deliberately NOT managed here any more.
+            
+              It was pinned to 2.14.0 with no reason recorded, and that pin broke the Quarkus 3.33
+              uber-jar packager: NoSuchMethodError on BoundedInputStream.builder(), which arrived in
+              commons-io 2.16, thrown from Quarkus's own UberJarBuilder. The build COMPILED and then
+              failed while writing the jar, so the error named commons-io while pointing at nothing in
+              this codebase.
+            
+              The platform BOM manages 2.21.0 - verified by resolving quarkus-bom:3.33.3.3 - and this
+              repository has no requirement of its own on the version. An override with no reason
+              attached is the kind of pin that outlives its purpose and then breaks something else.
+            -->
 
         </dependencies>
     </dependencyManagement>

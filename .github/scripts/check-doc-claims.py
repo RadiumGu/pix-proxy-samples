@@ -44,7 +44,13 @@ TOKENS = Path('proxy/core/src/main/java/com/amazon/aws/pix/core/audit/AuditAlarm
 COMPONENT_PROPERTY = {
     'Java': 'java.version',
     'Quarkus': 'quarkus.version',
-    'Camel Quarkus': 'camel-quarkus.version',
+    # 'Camel Quarkus' is NOT checked against a pom property any more: the property was removed when
+    # the build moved to the platform BOM, which manages the Camel extension versions. Checking a
+    # property that no longer exists would compare a documented number against None and fail for
+    # the wrong reason. The documented 3.33.2 is the version the BOM RESOLVES to, which is verified
+    # by resolving it - see the comment on quarkus.version in proxy/pom.xml - not by reading a pom
+    # property. A gate for the resolved value would have to run Maven, which this script does not.
+
     'Netty': 'netty.version',
     'netty-tcnative': 'netty-tcnative.version',
     'Jackson': 'jackson.version',

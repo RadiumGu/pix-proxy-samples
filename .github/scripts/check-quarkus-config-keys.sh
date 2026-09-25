@@ -56,6 +56,20 @@ echo "Quarkus augmentations found in the log: ${MODULES}"
 
 UNRECOGNIZED=$(grep -oE 'Unrecognized configuration key "[^"]+"' "$LOG" | sort -u || true)
 
+# DEPRECATED is checked separately from UNRECOGNIZED, because they are different strings and the first
+# version of this gate only looked for the second one.
+#
+# That gap was found rather than foreseen. Research said quarkus.package.type is renamed to
+# quarkus.package.jar.type in Quarkus 3.x, with a DEPRECATION warning rather than an "unrecognized" one -
+# so a renamed-but-still-working key would have sailed past this gate while being on a removal path.
+# (Measured on 3.33.3.3 the key is in fact still current: neither warning appears and the uber-jar is
+# still produced. The gap in the gate was real even though that particular claim was not.)
+#
+# A deprecated key still WORKS, so this is reported as a failure that names the key rather than a vague
+# warning: the whole point is to act on it while it works, not after it stops.
+DEPRECATED=$(grep -oE "'quarkus\.[a-z0-9.\-]+' has been deprecated[^\"]*" "$LOG" | sort -u || true)
+DEPRECATED="$DEPRECATED$(grep -oE 'Configuration key "quarkus\.[a-z0-9.\-]+" is deprecated[^"]*' "$LOG" | sort -u || true)"
+
 if [ -n "$UNRECOGNIZED" ]; then
   echo "ERROR: Quarkus ignored one or more configuration keys. It does NOT fail on these - it warns" >&2
   echo "       and continues, so the build reports success while the instruction has no effect." >&2
@@ -69,4 +83,14 @@ if [ -n "$UNRECOGNIZED" ]; then
   exit 1
 fi
 
-echo "OK: no unrecognized Quarkus configuration keys across ${MODULES} augmented module(s)"
+if [ -n "${DEPRECATED// /}" ]; then
+  echo "ERROR: Quarkus reports one or more configuration keys as DEPRECATED." >&2
+  echo "       These still work today, which is exactly why they are worth fixing now: the next" >&2
+  echo "       upgrade is where a deprecated key becomes an ignored one, and an ignored key changes" >&2
+  echo "       behaviour with a green build behind it." >&2
+  echo "" >&2
+  printf '%s\n' "$DEPRECATED" | sed 's/^/       /' >&2
+  exit 1
+fi
+
+echo "OK: no unrecognized or deprecated Quarkus configuration keys across ${MODULES} augmented module(s)"

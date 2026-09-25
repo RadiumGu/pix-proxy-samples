@@ -110,14 +110,14 @@ AWS CloudHSM —— **维护中的教学路径** | AWS KMS —— **历史遗留
 
 | Component | Pinned | Status |
 |---|---|---|
-| Java | **11**（CI 中为 `temurin`） | **低于目标。** SDK 5.17.1 是最后一个支持 OpenJDK 11 的版本。实测：整个 reactor 在 **JDK 17** 上同样能构建，且所有测试通过 |
+| Java | **17**（CI 中为 `temurin`） | **编译目标与运行期现已一致。** 先前钉在 11 的唯一原因是 Quarkus 1.7 读不了 major-61 的 class 文件；Quarkus 3.33 要求 17、Camel 4 放弃了 11、CloudHSM SDK 5 的 JCE provider 只支持 17/21/25——三个约束，同一个数字 |
 | Lombok | **1.18.48** | **当前。** 1.18.12 在 JDK 17 上根本无法作为注解处理器运行——构建*编译*失败。下限为 1.18.22 |
 | Jackson | **2.21.2**（LTS 线） | **当前。** 此前的 2.15.4 落在受 CVE-2026-59888 影响的版本范围内，该问题在 2.18+ 中修复 |
 | Netty | 4.1.138.Final | 更早的固定版本带有请求走私告警（CWE-444）；4.1.118 仍存在 CVE-2025-58056 |
 | netty epoll native | `linux-x86_64` **和** `linux-aarch_64` | 现已同时声明两者。若只声明其一，应用会在另一架构上启动即挂——已实测，在 JDK 11 和 17 上表现一致 |
 | netty-tcnative | 2.0.84.Final，`linux-x86_64-fedora` **与** `linux-aarch_64-fedora` | **两个架构都有。** 名字的不对称是刻意的:实测 2.0.84.Final 上并**没有**发布 plain `linux-aarch_64`。它是 OpenSSL provider，**无法承载 BCB 的 mTLS 密钥**——OpenSSL 需要密钥字节，而 HSM 密钥没有 |
-| Quarkus | **2.13.9.Final** | **第一段已完成，但仍不受支持。** 2.13 的社区维护于 **2022-11-07** 结束，且它从来不是 LTS；当前的 LTS 是 **3.33**（支持到 2027-03-25）。剩下的一段是 2.13 → 3.x，`quarkus update` 覆盖该区间，并会带来 `javax.*` → `jakarta.*` 改名 |
-| Camel Quarkus | **2.13.3**（Camel **3.18.6**） | 这是实际存在的最高版本——camel-quarkus 没有发布过 2.13.4 及以后，所以把它与 Quarkus 2.13.9 配对，正是平台 BOM 自身所发布的组合，而非此处臆造。仍然带来 `camel-netty-http` 及其 HTTP/1.1 |
+| Quarkus | **3.33.3.3** | **受支持,且是 LTS——这是本仓库历史上第一次。** 发布于 2026-03-25，社区维护至 **2027-03-25**。`javax.*` → `jakarta.*` 改名只波及 **6 处导入**；TLS、JCE 与 XMLDSig 代码一处都不用改，因为 `javax.net.ssl`、`javax.security.auth.*` 与 `javax.xml.crypto` 是 JDK 包，Jakarta 从未迁移它们 |
+| Camel Quarkus | **3.33.2**（Camel **4.18.3**） | 版本由 `quarkus-camel-bom` 决定，不再由属性指定——已通过解析 BOM 核实。camel-quarkus **3.33.3 确实存在**，而平台仍钉 3.33.2；不要手工抬高它，那个组合从未发布过。Camel 4 **没有**要求改动 `netty-http` 或 SSL |
 | CloudHSM SDK 5 | 5.18.0-1 rpm，经 SHA-256 校验 | **已是当前版本，不再是阻塞项。** 那四行 SDK 3 代码已移除，provider 改为 `CloudHsmProvider`。该 jar 不在 Maven Central 上，由 `cloudhsm/jce5` 从 rpm 中解包取得，并且是 **`provided`** 作用域——绝不打包进制品，因为它有代码签名且与架构绑定 |
 | Node (alarms app only) | 22 | 用于 CDK 告警应用，在 Maven 构建之外 |
 

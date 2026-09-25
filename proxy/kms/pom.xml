@@ -100,12 +100,22 @@
             <artifactId>quarkus-amazon-lambda</artifactId>
         </dependency>
 
-        <dependency>
-            <groupId>io.quarkus</groupId>
-            <artifactId>quarkus-test-amazon-lambda</artifactId>
-            <scope>test</scope>
-        </dependency>
+        <!--
+          quarkus-test-amazon-lambda is NOT declared here any more.
 
+          The artifact does not exist in Quarkus 3.33 - verified against Maven Central: present at
+          2.13.9.Final, 3.0.0.Final, 3.2.0.Final and 3.15.0, absent at every 3.33.x - and the 3.33
+          platform BOM does not manage it either, so the declaration made Maven unable even to READ this
+          pom: "'dependencies.dependency.version' for io.quarkus:quarkus-test-amazon-lambda:jar is
+          missing". That blocks the whole reactor at model-building time, not just this module.
+
+          It was dead weight regardless of the upgrade: this module has ZERO test classes and nothing in
+          src/ references the artifact. So removing it drops an unused test-scope declaration rather than
+          any capability.
+
+          This module is otherwise deliberately unmaintained and stays out of CI. Touching it here is a
+          knowing exception, made because the alternative is a repository that cannot build at all.
+        -->
         <dependency>
             <groupId>io.quarkus</groupId>
             <artifactId>quarkus-junit5</artifactId>

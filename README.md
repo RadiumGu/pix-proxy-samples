@@ -138,14 +138,14 @@ the SDK 3 era left behind.
 
 | Component | Pinned | Status |
 |---|---|---|
-| Java | **11** (`temurin` in CI) | **Below the target.** SDK 5.17.1 was the last release supporting OpenJDK 11. Measured: the whole reactor builds and all tests pass on **JDK 17** as well |
+| Java | **17** (`temurin` in CI) | **Target and runtime now agree.** It was pinned at 11 only because Quarkus 1.7 could not read major-61 class files; Quarkus 3.33 requires 17, Camel 4 dropped 11, and the CloudHSM SDK 5 JCE provider supports 17/21/25 only — three constraints, one number |
 | Lombok | **1.18.48** | **Current.** 1.18.12 could not run as an annotation processor on JDK 17 at all — the build failed to *compile*. Floor is 1.18.22 |
 | Jackson | **2.21.2** (LTS line) | **Current.** The previous 2.15.4 is in the range affected by CVE-2026-59888, fixed in 2.18+ |
 | Netty | 4.1.138.Final | Earlier pins carried request-smuggling advisories (CWE-444); 4.1.118 still had CVE-2025-58056 |
 | netty epoll native | `linux-x86_64` **and** `linux-aarch_64` | Both now declared. With one only, the app died at startup on the other architecture — measured, identically on JDK 11 and 17 |
 | netty-tcnative | 2.0.84.Final, `linux-x86_64-fedora` **and** `linux-aarch_64-fedora` | **Both architectures.** The names are asymmetric on purpose: measured at 2.0.84.Final, a plain `linux-aarch_64` is **not published**. This is the OpenSSL provider, which **cannot carry the BCB mTLS key** — OpenSSL needs key bytes an HSM has none of |
-| Quarkus | **2.13.9.Final** | **First leg done, and still not supported.** 2.13 community maintenance ended **2022-11-07** and it was never an LTS; the current LTS is **3.33** (until 2027-03-25). The remaining leg is 2.13 → 3.x, which `quarkus update` covers and which brings the `javax.*` → `jakarta.*` rename |
-| Camel Quarkus | **2.13.3** (Camel **3.18.6**) | Highest that exists — camel-quarkus published no 2.13.4+, so pairing it with Quarkus 2.13.9 is what the platform BOM itself ships, not an invented combination. Still brings `camel-netty-http` and its HTTP/1.1 |
+| Quarkus | **3.33.3.3** | **Supported, and an LTS — the first time in this repository's history.** Released 2026-03-25, community maintenance until **2027-03-25**. The `javax.*` → `jakarta.*` rename touched **6 imports**; the TLS, JCE and XMLDSig code needed none, because `javax.net.ssl`, `javax.security.auth.*` and `javax.xml.crypto` are JDK packages Jakarta never moved |
+| Camel Quarkus | **3.33.2** (Camel **4.18.3**) | Version comes from `quarkus-camel-bom`, not a property — verified by resolving the BOM. camel-quarkus **3.33.3 exists** and the platform still pins 3.33.2; do not raise it by hand, that pairing was never released. Camel 4 needed **no** `netty-http` or SSL changes |
 | CloudHSM SDK 5 | 5.18.0-1 rpm, SHA-256 verified | **Current, and no longer the blocker.** The four SDK 3 lines are gone; the provider is `CloudHsmProvider`. The jar is not on Maven Central, so `cloudhsm/jce5` unpacks it from the rpm, and it is **`provided`** — never bundled, because it is code-signed and architecture-specific |
 | Node (alarms app only) | 22 | For the CDK alarm app, outside the Maven build |
 

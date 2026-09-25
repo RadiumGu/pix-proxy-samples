@@ -52,9 +52,17 @@
       头部按需产生全部七种——这是一项**绝不可发送给真实 BCB 的模拟器特性**。请确认你的调用方与审计记录能处理
       每一种，然后再向 BCB 确认真实的代码与触发条件，因为模拟器的映射是
       本仓库的策略，而非 BCB 的行为。
-- [ ] **已以书面形式决定 mTLS 私钥策略。** 对于当前的 Netty TLS 路径，mTLS 私钥必须是**可导出的**，
-      因此本部署并不满足"私钥永不离开机构控制"这一最严格解读。签名私钥不受影响，
-      且不可导出。见 `CLOUDHSM_BCB_V2_HANDOFF.md` §7.1——并请注意，仅仅把私钥设为不可导出会在握手时失败。
+- [ ] **mTLS 私钥已创建为不可导出（NON-EXTRACTABLE），且创建后已逐项核对属性。**
+      本条此前的说法**正好相反**——曾要求该私钥*必须*可导出——而那个说法现已被**推翻**。它对 SDK 3 的路径
+      是成立的：当时客户端一侧使用 `SslProvider.OPENSSL`，而 OpenSSL 需要私钥的*字节*。但正确的补救从来
+      不是削弱这把密钥，而是在这一侧**不再使用 OpenSSL**。现在客户端一侧使用 `SslProvider.JDK` 配合
+      `HsmX509KeyManager`，它向 JSSE 索取的是一个 `PrivateKey` **对象**，从不索取其编码。
+      **已在真实硬件上实测**（基于当前代码），密钥以 `extractable=false`、`never-extractable=true`
+      创建：服务端收到了**恰好一张**客户端证书，而无凭据的对照组收到**零张**。
+      创建时必须**显式**给出属性——默认值是错的，而且错得毫无声响：
+      `--private-attributes sign=true extractable=false`。若用默认值，私钥会是
+      `extractable: true`、`never-extractable: false`、`sign: false`。随后请**重新读取**属性并核对这三项；
+      不要信任创建命令的退出码。
 - [ ] **已作出审计持久性决策**，依据 `LogRequestResponseProcessor` 中的代码注释：
       审计投递被有意设计为不会使一笔事务失败，这是以一个合规问题换取一个正确性问题。必须具备一个持久的兜底汇聚点（sink）
       以及针对 `AUDIT DELIVERY FAILED` 的告警，而审计失败是否应当拒绝一笔事务，则是一个合规判断。
@@ -189,7 +197,7 @@ bash .github/scripts/check-transport-contract.sh
 | gzip 响应以已签名 XML 的形式到达验证环节 | `DictV2CompressedResponseContractTest`（proxy/test） |
 | 路径 / 查询 / 重复查询 / 头 / 正文均被保留 | `DictV2TransparentProxyContractTest`（proxy/test） |
 | 模拟器请求策略 | `DictV2RequestPolicyTest`（proxy/test） |
-| 为何当前 mTLS 密钥必须可导出，以及为何此处无法使用 Netty 的私钥回调 | `MtlsNonExtractableKeyTest`（proxy/test） |
+| 为何 OpenSSL 无法承载不可导出的密钥，以及为何 Netty 的私钥回调不是此处的补救 | `MtlsNonExtractableKeyTest`（proxy/test） |
 | 生产路由仍声明固定选项，且解码先于验证 | `check-transport-contract.sh` |
 
 上面的数量特意标注了日期。每当新增测试时它们都会变化，因此应将 **CI run 自身的输出**视为权威，而非

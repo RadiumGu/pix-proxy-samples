@@ -60,11 +60,19 @@ to release, not a nice-to-have.
       that must never be sent to real BCB**. Confirm your caller and your audit records handle
       each, then confirm the real codes and conditions with BCB, since the simulator's mapping is
       this repository's policy and not BCB behaviour.
-- [ ] **mTLS private-key policy decided in writing.** The mTLS key must be **extractable** for the
-      current Netty TLS path, so this deployment does not satisfy the strictest reading of
-      "the private key never leaves the institution's control". The signing key is unaffected and
-      non-extractable. See `CLOUDHSM_BCB_V2_HANDOFF.md` §7.1 — and note that simply making the key
-      non-extractable fails at handshake time.
+- [ ] **mTLS private key created NON-EXTRACTABLE, and the attributes asserted after creation.**
+      This item used to say the opposite — that the key *must* be extractable — and that is now
+      **falsified**. It was true of the SDK 3 path, where the client leg used `SslProvider.OPENSSL`,
+      and OpenSSL needs the key *bytes*. The remedy was never to weaken the key; it was to stop using
+      OpenSSL for that leg. The client leg now uses `SslProvider.JDK` with `HsmX509KeyManager`, which
+      asks JSSE for a `PrivateKey` **object** and never for its encoding.
+      **Measured on real hardware** on the current code, with a key created `extractable=false`,
+      `never-extractable=true`: the server received exactly **one** client certificate, against a
+      no-credential control that received **zero**.
+      Create it with the attributes **explicit** — the defaults are wrong and silently so:
+      `--private-attributes sign=true extractable=false`. With defaults the key comes back
+      `extractable: true`, `never-extractable: false`, `sign: false`. Then **re-read** the attributes
+      and check all three; do not trust the creation command's exit code.
 - [ ] **Audit durability decision made**, per the code comments in `LogRequestResponseProcessor`:
       audit delivery deliberately does not fail a transaction, which trades a correctness problem
       for a compliance one. A durable fallback sink and an alarm on `AUDIT DELIVERY FAILED` are
@@ -208,7 +216,7 @@ bash .github/scripts/check-transport-contract.sh
 | gzip response reaches verification as the signed XML | `DictV2CompressedResponseContractTest` (proxy/test) |
 | path / query / repeated query / headers / body preserved | `DictV2TransparentProxyContractTest` (proxy/test) |
 | simulator request policy | `DictV2RequestPolicyTest` (proxy/test) |
-| why the mTLS key must currently be extractable, and why Netty's private-key callback is not available here | `MtlsNonExtractableKeyTest` (proxy/test) |
+| why OpenSSL cannot carry a non-extractable key, and why Netty's private-key callback is not the remedy here | `MtlsNonExtractableKeyTest` (proxy/test) |
 | production route still declares the pinned options, decode precedes verify | `check-transport-contract.sh` |
 
 The counts above are dated on purpose. They move whenever a test is added, so treat the **CI run's
